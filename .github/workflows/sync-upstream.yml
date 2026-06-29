@@ -15,4 +15,4 @@ jobs:
       - name: Synchroniser master depuis nextcloud/nextcloudpi
         run: gh repo sync TheWorms/nextcloudpi --branch master
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
