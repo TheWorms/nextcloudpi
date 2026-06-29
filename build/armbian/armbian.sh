@@ -12,16 +12,18 @@
 
 set -e
 
+echo 'Running user script...'
+
 ARMBIAN_RELEASE=$1
 LINUXFAMILY=$2
 BOARD=$3
 BUILD_DESKTOP=$4
 
+echo "include home dir? ${INCLUDE_HOME_DIR:-no}"
+
 cd /tmp/overlay
 NCPCFG=etc/ncp.cfg
 source etc/library.sh # sets RELEASE
-
-[[ "$ARMBIAN_RELEASE" != "$RELEASE" ]] && { echo "Only $RELEASE is supported by NextCloudPi" >&2; exit 1; }
 
 # need sudo access that does not expire during build
 chage -d -1 root
@@ -31,11 +33,25 @@ echo -e "\nInstalling NextCloudPi"
 
 hostname -F /etc/hostname # fix 'sudo resolve host' errors
 
-CODE_DIR="$(pwd)" bash install.sh
+ARMBIAN_BUILD=yes CODE_DIR="$(pwd)" DBG=x bash install.sh || {
+  echo "SOMETHING WENT WRONG, EXITING..."
+  exit 1
+}
+sed -i 's/^ignore-warnings ARM64-COW-BUG//' /etc/redis/redis.conf
+
+echo -e "\nPostinstall..."
 run_app_unsafe post-inst.sh
 
 # disable SSH by default, it can be enabled through ncp-web
 systemctl disable ssh
+
+# disable armbian autologin
+rm -f /etc/systemd/system/getty@.service.d/override.conf
+rm -f /etc/systemd/system/serial-getty@.service.d/override.conf
+rm -f /root/.not_logged_in_yet
+sed -i 's|^root::|root:x:|' /etc/passwd
+
+basename "$IMG" | tee /usr/local/etc/ncp-baseimage
 
 cd -
 

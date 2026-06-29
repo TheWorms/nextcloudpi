@@ -8,7 +8,7 @@
 # Usage: ./build-SD-armbian.sh <board_code> [<board_name>]
 #
 
-set -e
+set -ex
 source build/buildlib.sh
 
 #CLEAN=0                    # Pass this envvar to avoid cleaning download cache
@@ -18,7 +18,7 @@ NCPCFG=etc/ncp.cfg
 
 echo -e "\e[1m\n[ Build NCP ${BNAME} ]\e[0m"
 
-IMG="NextCloudPi_${BNAME}_$( date  "+%m-%d-%y" ).img"
+IMG="${IMG:-NextcloudPi_${BNAME}_$( date  "+%m-%d-%y" ).img}"
 IMG=tmp/"$IMG"
 TAR=output/"$( basename "$IMG" .img ).tar.bz2"
 
@@ -30,8 +30,13 @@ source etc/library.sh # sets RELEASE
 prepare_dirs                   # tmp cache output
 
 # get latest armbian
-[[ -d armbian ]] || git clone https://github.com/armbian/build armbian
-( cd armbian && git pull --ff-only --tags )
+[[ -d armbian ]] || {
+  git clone --depth 1 --branch "$(cat "$(dirname "${0}")/armbian/armbian_version")" https://github.com/armbian/build armbian
+}
+#( cd armbian && git pull --ff-only --tags && git checkout v23.02 )
+#sed -i -e '/export rootfs_size=/s/du -sm/du --apparent-size -sm/' armbian/lib/functions/image/partitioning.sh
+#sed -i -e '/export rootfs_size_mib=/s/du -sm/du --apparent-size -sm/' armbian/lib/functions/main/rootfs-image.sh
+#sed -i -e 's/du /du --apparent-size /' armbian/lib/functions/image/rootfs-to-image.sh
 
 # add NCP modifications
 mkdir -p armbian/userpatches armbian/userpatches/overlay
@@ -46,13 +51,13 @@ CONF=armbian/userpatches/config-ncp.conf
 # default parameters
 cat > "$CONF" <<EOF
 BOARD="$BOARD"
-BRANCH=legacy
-RELEASE=$RELEASE
-KERNEL_ONLY=no
-KERNEL_CONFIGURE=no
+BRANCH=current
+RELEASE=${RELEASE%%-security}
+KERNEL_CONFIGURE=prebuilt
 BUILD_DESKTOP=no
 BUILD_MINIMAL=yes
 USE_CCACHE=yes
+INCLUDE_HOME_DIR=yes
 EOF
 [[ "$CLEAN" == "0" ]] && {
   cat >> "$CONF" <<EOF
@@ -67,16 +72,23 @@ EXTRA_CONF=build/armbian/"config-$BOARD".conf
 
 # build
 rm -rf armbian/output/images
-armbian/compile.sh docker ncp
+mkdir -p armbian/userpatches
+#sed -e '/docker.*run/s/-it//' armbian/config/templates/config-docker.conf > armbian/userpatches/config-docker.conf
+#docker pull "ghcr.io/armbian/build:$(cut -d"." -f1-2 < armbian/VERSION)-$(dpkg --print-architecture)" \
+# || docker pull "ghcr.io/armbian/build:latest-$(dpkg --print-architecture)"
+export INCLUDE_HOME_DIR=yes
+armbian/compile.sh ncp
 rm "$CONF"
 
 # pack image
-mv armbian/output/images/Armbian*.img "$IMG"
-pack_image "$IMG" "$TAR"
+
+[[ " $* " =~ " --pack " ]] && { mv armbian/output/images/Armbian*.img "$IMG" && pack_image "$IMG" "$TAR"; }
+
+exit 0
 
 # test
 # TODO
 
 # upload
-create_torrent "$TAR"
+#create_torrent "$TAR"
 #upload_ftp "$( basename "$TAR" .tar.bz2 )"

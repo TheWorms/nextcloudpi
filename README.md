@@ -1,29 +1,55 @@
 English | [Traditional Chinese 繁體中文](i18n/README-zh_TW.md) | [Simplified Chinese 简体中文](i18n/README-zh_CN.md)
 
-# NextCloudPi [![chatroom icon](https://patrolavia.github.io/telegram-badge/chat.png)](https://t.me/NextCloudPi) [![forums icon](https://img.shields.io/badge/help-forums-blue.svg)](https://help.nextcloud.com/c/support/appliances-docker-snappy-vm) [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=N8PJHSEQF4G7Y&lc=US&item_name=Own%20Your%20Bits&item_number=NextCloudPi&no_note=1&no_shipping=1&currency_code=EUR&bn=PP%2dDonationsBF%3abtn_donate_LG%2egif%3aNonHosted) [![blog](https://img.shields.io/badge/follow-blog-orange.svg)](https://ownyourbits.com)
+_(The translated README pages are not updated at this time)_
 
+# NextcloudPi
 
-![NC Logo](https://ownyourbits.com/wp-content/uploads/2017/11/ncp-square.png)
+[![Telegram icon][telegram-badge]][chat-telegram] [![Matrix icon][matrix-badge]][chat-matrix]  [![Nextcloud icon][nc-badge]][nc-github]
 
-This is the build code for [NextCloudPi](https://nextcloudpi.com).
+[![Forum icon][forum-badge]][nc-forum-support]
 
-NextCloudPi is a ready to use image for Raspberry Pi, Odroid HC1, rock64 and other boards.
+<p align="center">
+  <img src="https://github.com/nextcloud/nextcloudpi/blob/master/ncp-app/img/app.svg"
+       width="120"
+       height="85"
+       alt="NextcloudPi logo">
+</p>
 
-This code also generates the NextCloudPi [docker image](https://hub.docker.com/r/ownyourbits/nextcloudpi), LXD and VM, and includes an installer for any Debian based system.
+This is the build code for the [NextcloudPi][ncp-website] open-source community project.
 
-Find the full documentation at [docs.nextcloudpi.com](http://docs.nextcloudpi.com)
+NextcloudPi is a ready to use image for Virtual Machines, Raspberry Pi, Odroid HC1, Rock64 and other boards. ([⇒ Downloads][ncp-releases])
+
+This code also generates the NextcloudPi LXD and LXC containers and there is an install script for the latest supported Debian based system as well.
+
+Find the documentation at [docs.nextcloudpi.com][ncp-docs-website], the documentation is all written by volunteers.
+
+Please reach out in the [Matrix][chat-matrix-wiki] or [Telegram][chat-telegram-wiki] Wiki group chats if you want to help out to keep them up-to-date and we'll add you to the [Wiki Group][nc-forum-wiki-group] on the [forum][nc-forum].
+
+---
+
+### Test Status
+
+`master`
+
+[![Release](https://github.com/nextcloud/nextcloudpi/actions/workflows/release.yml/badge.svg)](https://github.com/nextcloud/nextcloudpi/actions/workflows/release.yml)
+
+`devel`
+
+[![Release](https://github.com/nextcloud/nextcloudpi/actions/workflows/release.yml/badge.svg?branch=devel)](https://github.com/nextcloud/nextcloudpi/actions/workflows/release.yml)
+
+---
 
 ## Features
 
- * Debian/Raspbian 10 Buster
- * Nextcloud 22.2.2
- * Apache 2.4.25, with HTTP2 enabled
- * PHP 7.3
- * MariaDB 10
+ * Raspberry Pi OS/Debian 12 _(Bookworm)_
+ * Nextcloud
+ * Apache, with HTTP2 enabled
+ * PHP 8.1
+ * MariaDB
  * Redis memory cache
- * ncp-config for easy setup ( RAM logs, USB drive and more )
+ * ncp-config TUI for easy setup ( RAM logs, USB drive and more )
  * Automatic redirection to HTTPS
- * ACPU PHP cache
+ * APCu PHP cache
  * PHP Zend OPcache enabled with file cache
  * HSTS
  * Cron jobs for Nextcloud
@@ -35,7 +61,7 @@ Find the full documentation at [docs.nextcloudpi.com](http://docs.nextcloudpi.co
 ## Extras
 
  * Setup wizard
- * NextCloudPi Web Panel
+ * NextcloudPi Web Panel
  * Wi-Fi ready
  * Ram logs
  * Automatic security updates, activated by default.
@@ -56,8 +82,8 @@ Find the full documentation at [docs.nextcloudpi.com](http://docs.nextcloudpi.co
  * Automatic NCP updates
  * Automatic Nextcloud updates
  * Update notifications
- * NextCloud backup and restore
- * NextCloud online installation
+ * Nextcloud backup and restore
+ * Nextcloud online installation
  * Format USB drive to BTRFS
  * BTRFS snapshots
  * Automatic BTRFS snapshots
@@ -67,80 +93,233 @@ Find the full documentation at [docs.nextcloudpi.com](http://docs.nextcloudpi.co
  * Security audits with Lynis and Debsecan
  * ZRAM
  * SMART hard drive health monitoring
- * Prometheus metrics monitoring
 
 Extras can be activated and configured using the web interface at HTTPS port 4443
 
-![ncp-web](https://user-images.githubusercontent.com/21343324/136853829-f4e99ec0-6307-431f-b4c7-21b2330cae7f.png)
+![ncp-web][ncp-web-image]
 
-, or from the command line from
+Or from the command line using
 
 ```
 sudo ncp-config
 ```
 
-![NCP-config](https://ownyourbits.com/wp-content/uploads/2017/03/ncp-conf-700x456.jpg)
+![NCP-config][ncp-config-image]
 
+## Docker has been discontinued
 
-## Run in docker
-
-```
-docker run -d -p 4443:4443 -p 443:443 -p 80:80 -v ncdata:/data --name nextcloudpi ownyourbits/nextcloudpi $DOMAIN
-```
+Docker has been discontinued for the time being, please read the announcement here: https://help.nextcloud.com/t/nextcloudpi-planning-to-discontinue-its-docker-version-with-nc-25/158895
 
 ## Run in LXD
 
 ```
-lxc import NextCloudPi_LXD_09-29-21.tar.bz
+# Imports the LXC image, replace the X's with version number
+lxc image import "NextcloudPi_LXD_vX.XX.X.tar.gz" --alias "nextcloudpi"
+
+# Launches a container from the image
+lxc launch "nextcloudpi" ncp
+
+# Starts the container you've launched from the imported image
 lxc start ncp
 ```
 
+## Run in Proxmox
+
+There are two ways to run NCP on Proxmox:
+
+### 1. Using the official release image
+
+In your Proxmox web interface, head to any storage pool that has CT Templates enabled, go to CT Templates, 
+click "Download from URL" and enter the link to the latest LXC image from the [Nextcloudpi releases page](https://github.com/nextcloud/nextcloudpi/releases)
+and press "Download".
+
+<img height="300" alt="Download from URL dialog" src="https://nextcloudpi.com/images/ncp-proxmox-download-screenshot.png">
+
+Optionally, you can copy the corresponding md5 sum from the releases page and paste it in the "Checksum" field to have
+Proxmox check that the downloaded image was not corrupted
+
+### 2. Installer by community-scripts (formerly tteck)
+
+Use the [install script][ncp-proxmox-install-script-v5] from [community-scripts][community-scripts-profile] to install the LXC container on your Proxmox instance
+
+[community-scripts][community-scripts-profile] has multiple helper scripts available for Proxmox on their [website][website-helper-scripts], go have a look if you're using Proxmox. :+1:
+
+
+Installation: `bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/ct/nextcloudpi.sh)"`
+
+Default Settings: `2GB RAM - 8GB Storage - 2vCPU`
+
+_(Check their [website][website-helper-scripts] if this has changed and we haven't had the time to update it here yet, it's located under: Operating-Systems > NextcloudPi LXC)_
+
+Thank you to the [community-scripts][community-scripts-profile] organisation :heart: for making the helper script & letting us use this for Proxmox installations :pray:
+
+You can find the GitHub repository with the helper scripts here: [here][gh-helper-scripts-repo].
+
 ## How to build
 
-Install git, docker, qemu-user-static, chroot and all the usual building tools.
+Packages
+
+- `apt-utils`
+- `apt-transport-https`
+- `build-essential`
+- `binfmt-support`
+- `binutils`
+- `bzip2`
+- `ca-certificates`
+- `chroot`
+- `cron`
+- `curl`
+- `dialog`
+- `lsb-release`
+- `jq`
+- `git`
+- `psmisc`
+- `procps`
+- `wget`
+- `whiptail`
+- `qemu`
+- `qemu-user-static`
+
+### Raspberry Pi IMG
 
 ```
 git clone https://github.com/nextcloud/nextcloudpi.git
 cd nextcloudpi
-build/build-SD-rpi.sh
+./build/build-SD-rpi.sh
 ```
 
-, or for an Armbian based board
+### Armbian-based board
 
 ```
 ./build-SD-armbian.sh odroidxu4   # supported board code name
 ```
 
-In order to generate the Docker images
+### LXD
 
 ```
-git clone https://github.com/nextcloud/nextcloudpi.git
-cd nextcloudpi
-build/build-docker.sh x86
-build/build-docker.sh armhf
-build/build-docker.sh arm64
+./build/build-LXD.sh
 ```
 
-, for LXD
-
-```
-build/build-LXD.sh
-```
-
-NextCloudPi can be installed in any architecture running the latest Debian
+NextcloudPi can be installed in any architecture running the latest Debian
 
 _Note: this assumes a clean Debian install, and there is no rollback method_
+
+### Curl install scripts
+
+This is executed as `root` as indicated by the `#`
 
 ```
 # curl -sSL https://raw.githubusercontent.com/nextcloud/nextcloudpi/master/install.sh | bash
 ```
 
-## Downloads
+If you're not `root` you can run it with `sudo` like so
 
-https://nextcloudpi.com
+```
+curl -sSL https://raw.githubusercontent.com/nextcloud/nextcloudpi/master/install.sh | sudo bash
+```
 
-https://hub.docker.com/r/ownyourbits/nextcloudpi
+## Links
+
+[Website][ncp-website]
+
+[Downloads][ncp-releases]
+
+<!-- [Docker Hub][ncp-docker-hub] -->
+
+[Nextcloud Forum][nc-forum]
+
+[Nextcloud Forum Support][nc-forum-support]
+
+_(Use the Forum for Support questions please, there's a NCP tag available, it will bridge your post to the Matrix and Telegram chats)_
 
 ## Contact
 
-You can find us in the [forums](https://help.nextcloud.com/c/support/appliances-docker-snappy-vm) and a [Telegram group](https://t.me/NextCloudPi)
+You can find us on the [Forum][nc-forum], [Telegram][chat-telegram] or [Matrix][chat-matrix]
+
+<!-- LINKS -->
+
+[ncp-website]: https://nextcloudpi.com
+
+[ncp-docs-website]: http://docs.nextcloudpi.com
+
+[ncp-docker-hub]: https://hub.docker.com/r/ownyourbits/nextcloudpi
+
+[ncp-releases]: https://github.com/nextcloud/nextcloudpi/releases
+
+[nc-github]: https://github.com/nextcloud
+
+<!-- FORUM -->
+
+[nc-forum]: https://help.nextcloud.com/
+
+[nc-forum-support]: https://help.nextcloud.com/c/support/appliances-docker-snappy-vm
+
+[nc-forum-wiki-group]: https://help.nextcloud.com/g/NCP_Wiki_Team/members
+
+<!-- CHAT -->
+
+[chat-matrix]: https://matrix.to/#/#nextcloudpi:matrix.org
+
+[chat-matrix-wiki]: https://matrix.to/#/#NCP_Wiki_Team:matrix.org
+
+[chat-telegram]: https://t.me/NextcloudPi
+
+[chat-telegram-wiki]: https://t.me/NCP_Wiki_Team
+
+<!-- TESTS -->
+
+[vm-tests]: https://github.com/nextcloud/nextcloudpi/actions/workflows/vm-tests.yml
+
+[docker-tests]: https://github.com/nextcloud/nextcloudpi/actions/workflows/build-docker.yml
+
+<!-- BADGES -->
+
+[gh-vm-tests-badge]: https://github.com/nextcloud/nextcloudpi/actions/workflows/vm-tests.yml/badge.svg
+
+[gh-docker-tests-badge]: https://github.com/nextcloud/nextcloudpi/actions/workflows/build-docker.yml/badge.svg
+
+[gh-vm-tests-badge-devel]: https://github.com/nextcloud/nextcloudpi/actions/workflows/vm-tests.yml/badge.svg?branch=devel
+
+[gh-docker-tests-badge-devel]: https://github.com/nextcloud/nextcloudpi/actions/workflows/build-docker.yml/badge.svg?branch=devel
+
+[vm-tests-badge]: https://github.com/nextcloud/nextcloudpi/workflows/VM%20Integration%20Tests/badge.svg
+
+[docker-tests-badge]: https://github.com/nextcloud/nextcloudpi/actions/workflows/build-docker.yml/badge.svg
+
+[telegram-badge]: https://img.shields.io/badge/Telegram-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white
+
+[matrix-badge]: https://img.shields.io/badge/matrix-000000?style=for-the-badge&logo=Matrix&logoColor=white
+
+[forum-badge]: https://img.shields.io/badge/help-forums-blue.svg
+
+[nc-badge]: https://img.shields.io/badge/Nextcloud-0082C9?style=for-the-badge&logo=Nextcloud&logoColor=white
+
+<!-- COMMUNITY-SCRIPTS -->
+
+[community-scripts-profile]: https://github.com/community-scripts/
+
+[gh-helper-scripts-repo]: https://github.com/community-scripts/ProxmoxVE
+
+[website-helper-scripts]: https://community-scripts.github.io/ProxmoxVE/
+
+[ncp-proxmox-install-script-v5]: https://github.com/community-scripts/ProxmoxVE/blob/main/install/nextcloudpi-install.sh
+
+<!-- IMAGES -->
+
+[ncp-web-image]: https://user-images.githubusercontent.com/21343324/136853829-f4e99ec0-6307-431f-b4c7-21b2330cae7f.png
+
+[ncp-config-image]: https://help.nextcloud.com/uploads/default/original/3X/b/3/b3d157022a32296ab54428b14b5df02104a91f18.png
+
+<!-- EXTRAS & BACKUPS
+
+[telegram-badge]: https://patrolavia.github.io/telegram-badge/chat.png
+
+[rpi-badge]: https://img.shields.io/badge/Raspberry%20Pi-A22846?style=for-the-badge&logo=Raspberry%20Pi&logoColor=white
+
+[linux-badge]: https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black
+
+[debian-badge]: https://img.shields.io/badge/Debian-A81D33?style=for-the-badge&logo=debian&logoColor=white
+
+[gh-badge]: https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white
+
+-->

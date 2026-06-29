@@ -7,6 +7,13 @@
 # More at https://ownyourbits.com/2017/02/13/nextcloud-ready-raspberry-pi-image/
 #
 
+tmpl_get_destination() {
+  (
+  . /usr/local/etc/library.sh
+  find_app_param nc-backup-auto DESTDIR
+  )
+}
+
 configure()
 {
   [[ $ACTIVE != "yes" ]] && {
@@ -40,9 +47,24 @@ fi
 EOF
   chmod +x /usr/local/bin/ncp-backup-auto
 
-  echo "0  3  */${BACKUPDAYS}  *  *  root  /usr/local/bin/ncp-backup-auto >> /var/log/ncp.log 2>&1" > /etc/cron.d/ncp-backup-auto
+  [[ "$BACKUPHOUR" =~ ^([0-1]?[0-9]|2[0-4])$ ]] || {
+    echo "ERROR: 'BACKUPHOUR' must be a number between 0 and 24, was: '$BACKUPHOUR'"
+    return 1
+  }
+
+  [[ "$BACKUPDAYS" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: 'BACKUPDAYS' must be a number, was: '$BACKUPDAYS'"
+    return 1
+  }
+
+  echo "0  ${BACKUPHOUR}  */${BACKUPDAYS}  *  *  root  /usr/local/bin/ncp-backup-auto >> /var/log/ncp.log 2>&1" > /etc/cron.d/ncp-backup-auto
   chmod 644 /etc/cron.d/ncp-backup-auto
   service cron restart
+
+  (
+    . "${BINDIR}/SYSTEM/metrics.sh"
+    reload_metrics_config
+  )
 
   echo "automatic backups enabled"
 }

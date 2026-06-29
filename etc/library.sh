@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# NextCloudPi function library
+# NextcloudPi function library
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -8,11 +8,36 @@
 # More at ownyourbits.com
 #
 
-export NCPCFG=${NCPCFG:-/usr/local/etc/ncp.cfg}
 export CFGDIR=/usr/local/etc/ncp-config.d
 export BINDIR=/usr/local/bin/ncp
 export NCDIR=/var/www/nextcloud
 export ncc=/usr/local/bin/ncc
+export NCPCFG=${NCPCFG:-etc/ncp.cfg}
+export ARCH="$(dpkg --print-architecture)"
+export DB_PREFIX="$(php -r 'include("/var/www/nextcloud/config/config.php"); echo $CONFIG['"'dbtableprefix'"'];' || echo 'oc_')"
+[[ "${ARCH}" =~ ^(armhf|arm)$ ]] && ARCH="armv7"
+[[ "${ARCH}" == "arm64" ]] && ARCH=aarch64
+[[ "${ARCH}" == "amd64" ]] && ARCH=x86_64
+# Prevent systemd pager from blocking script execution
+export SYSTEMD_PAGER=
+
+[[ -f "$NCPCFG" ]] || export NCPCFG=/usr/local/etc/ncp.cfg
+[[ -f "$NCPCFG" ]] || { echo "$NCPCFG not found" >&2; exit 1; }
+
+if [[ "$(ps -p 1 --no-headers -o "%c")" == "systemd" ]] && ! [[ -d "/run/systemd/system" ]]
+then
+  INIT_SYSTEM="chroot"
+elif [[ -d "/run/systemd/system" ]]
+then
+  INIT_SYSTEM="systemd"
+elif [[ "$(ps -p 1 --no-headers -o "%c")" == "run-parts.sh" ]]
+then
+  INIT_SYSTEM="docker"
+else
+  INIT_SYSTEM="unknown"
+fi
+
+export INIT_SYSTEM
 
 #unset TRUSTED_DOMAINS
 #declare -A TRUSTED_DOMAINS
@@ -27,11 +52,11 @@ command -v jq &>/dev/null || {
   apt-get install -y --no-install-recommends jq
 }
 
-[[ -f "$NCPCFG" ]] && {
-  NCLATESTVER=$(jq -r .nextcloud_version < "$NCPCFG")
-  PHPVER=$(     jq -r .php_version       < "$NCPCFG")
-  RELEASE=$(    jq -r .release           < "$NCPCFG")
-}
+NCLATESTVER=$(jq -r .nextcloud_version < "$NCPCFG")
+PHPVER=$(     jq -r .php_version       < "$NCPCFG")
+RELEASE=$(    jq -r .release           < "$NCPCFG")
+# the default repo in bullseye is bullseye-security
+grep -Eh '^deb ' /etc/apt/sources.list | grep "${RELEASE}-security" > /dev/null && RELEASE="${RELEASE}-security"
 command -v ncc &>/dev/null && NCVER="$(ncc status 2>/dev/null | grep "version:" | awk '{ print $3 }')"
 
 function configure_app()
@@ -132,21 +157,24 @@ function set-nc-domain()
   if is_ncp_activated && is_app_enabled notify_push; then
     ncc config:system:set trusted_proxies 11 --value="127.0.0.1"
     ncc config:system:set trusted_proxies 12 --value="::1"
-    ncc config:system:set trusted_proxies 13 --value="${domain}"
-    ncc config:system:set trusted_proxies 14 --value="$(dig +short "${domain}")"
+#    ncc config:system:set trusted_proxies 13 --value="${domain}"
+    local domain_ip="$(dig +short "${domain}")"
+    [[ -z "$domain_ip" ]] || ncc config:system:set trusted_proxies 14 --value="$(dig +short "${domain}")"
     sleep 5 # this seems to be required in the VM for some reason. We get `http2 error: protocol error` after ncp-upgrade-nc
-    ncc notify_push:setup "${url}/push"
+    for try in {1..5}
+    do
+      echo "Setup notify_push (attempt ${try}/5)"
+      ncc notify_push:setup "${url}/push" && break
+      sleep 10
+    done
   fi
 }
 
-function start_notify_push
+function start_notify_push()
 {
     pgrep notify_push &>/dev/null && return
     if [[ -f /.docker-image ]]; then
-      local arch
-      arch="$(uname -m)"
-      [[ "${arch}" =~ "armv7" ]] && arch="armv7"
-      NEXTCLOUD_URL=https://localhost sudo -E -u www-data /var/www/nextcloud/apps/notify_push/bin/"${arch}"/notify_push --allow-self-signed /var/www/nextcloud/config/config.php &>/dev/null &
+      NEXTCLOUD_URL=https://localhost sudo -E -u www-data "/var/www/nextcloud/apps/notify_push/bin/${ARCH}/notify_push" --allow-self-signed /var/www/nextcloud/config/config.php &>/dev/null &
     else
       systemctl enable --now notify_push
     fi
@@ -186,17 +214,45 @@ function find_app_param_num()
 
 }
 
+function get_app_params() {
+  local script="${1?}"
+  local cfg_file="${CFGDIR}/${script%.sh}.cfg"
+  [[ -f "$cfg_file" ]] && {
+    local cfg="$( cat "$cfg_file" )"
+    local param_count="$(jq ".params | length" <<<"$cfg")"
+    local i=0
+    local json="{"
+    while [[ $i -lt $param_count ]]
+    do
+      param_id="$(jq -r ".params[$i].id" <<<"$cfg")"
+      param_val="$(jq -r ".params[$i].value" <<<"$cfg")"
+      json="${json}"$'\n'"  \"${param_id}\": \"${param_val}\""
+      i=$((i+1))
+      [[ $i -lt $param_count ]] && json="${json},"
+    done
+    json="${json}"$'\n'"}"
+    echo "$json"
+    return 0
+  }
+
+  return 1
+}
+
 install_template() {
   local template="${1?}"
   local target="${2?}"
   local bkp="$(mktemp)"
+
+  echo "Installing template '$template'..."
+
+  mkdir -p "$(dirname "$target")"
   [[ -f "$target" ]] && cp -a "$target" "$bkp"
   {
-    if [[ "$3" == "--defaults" ]]; then
+    if [[ "${3:-}" == "--defaults" ]]; then
       { bash "/usr/local/etc/ncp-templates/$template" --defaults > "$target"; } 2>&1
     else
       { bash "/usr/local/etc/ncp-templates/$template" > "$target"; } 2>&1 || \
-        if [[ "$3" == "--allow-fallback" ]]; then
+        if [[ "${3:-}" == "--allow-fallback" ]]; then
           { bash "/usr/local/etc/ncp-templates/$template" --defaults > "$target"; } 2>&1
         fi
     fi
@@ -217,6 +273,39 @@ find_app_param()
 
   local p_num="$(find_app_param_num "$script" "$param_id")" || return 1
   jq -r ".params[$p_num].value" < "$cfg_file"
+}
+
+set_app_param()
+{
+  local script="${1?}"
+  local param_id="${2?}"
+  local param_value="${3?}"
+  local ncp_app="$(basename "$script" .sh)"
+  local cfg_file="$CFGDIR/$ncp_app.cfg"
+
+  grep -q '[\\&#;'"'"'`|*?~<>^"()[{}$&[:space:]]' <<< "${param_value}" && { echo "Invalid characters in field ${vars[$i]}"; return 1; }
+
+  cfg="$(cat "$cfg_file")"
+
+  local len="$(jq  '.params | length' <<<"$cfg")"
+  local param_found=false
+
+  for (( i = 0 ; i < len ; i++ )); do
+    # check for invalid characters
+    [[ "$(jq -r ".params[$i].id" <<<"$cfg")" == "$param_id" ]] && {
+      cfg="$(jq ".params[$i].value = \"${param_value}\"" <<<"$cfg")"
+      param_found=true
+    }
+
+  done
+
+  [[ "$param_found" == "true" ]] || {
+    echo "Did not find parameter '${param_id}' in configuration of app '$(basename "$script" .sh)'"
+    return 1
+  }
+
+  echo "$cfg" > "$cfg_file"
+
 }
 
 # receives a script file, no security checks
@@ -364,6 +453,26 @@ function persistent_cfg()
   ln -s "$DST" "$SRC"
 }
 
+function install_with_shadow_workaround()
+{
+  # Subshell to trap trap :P
+  (
+    restore_shadow=true
+    [[ -L /etc/shadow ]] || restore_shadow=false
+    [[ "$restore_shadow" == "false" ]] || {
+      trap "mv /etc/shadow /data/etc/shadow; ln -s /data/etc/shadow /etc/shadow" EXIT
+      rm /etc/shadow
+      cp /data/etc/shadow /etc/shadow
+    }
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+    [[ "$restore_shadow" == "false" ]] || {
+      mv /etc/shadow /data/etc/shadow
+      ln -s /data/etc/shadow /etc/shadow
+    }
+    trap - EXIT
+  )
+}
+
 function is_more_recent_than()
 {
   local version_A="$1"
@@ -378,7 +487,7 @@ function is_more_recent_than()
   local patch_b=$( cut -d. -f3 <<<"$version_B" )
 
   # Compare version A with version B
-  # Return true if A is more recent than B
+  # Return 1 if A is more recent than B
 
   if [ "$major_b" -gt "$major_a" ]; then
     return 1
@@ -394,7 +503,7 @@ function is_more_recent_than()
 function is_app_enabled()
 {
   local app="$1"
-   ncc app:list | sed '0,/Disabled/!d' | grep -q "${app}"
+  ncc app:list --output json | jq -r '.enabled | keys | .[]' | grep '^previewgenerator$' > /dev/null 2> /dev/null
 }
 
 function check_distro()
@@ -407,7 +516,54 @@ function check_distro()
 
 function nc_version()
 {
-  ncc status | grep "version:" | awk '{ print $3 }'
+  ncc status | grep "versionstring:" | awk '{ print $3 }'
+}
+
+function determine_nc_update_version() {
+  local current supported current_maj supported_maj versions next_version
+  current="${1?}"
+  supported="${2?}"
+  requested="${3:-latest}"
+
+  #CURRENT="$(ncc status | grep "versionstring:" | awk '{ print $3 }')"
+  current_maj="${current%%.*}"
+  requested_maj="${requested%%.*}"
+  supported_maj="${supported%%.*}"
+
+  # If valid version is requested -> direct update, don't consider anything else
+  if [[ "$requested" =~ ^[0-9]*.[0-9]*.[0-9]*$ ]]
+  then
+    if ! is_more_recent_than "${requested}" "${current}"
+    then
+      echo "$current"
+      return 0
+    elif [[ "$requested_maj" -le "$((current_maj + 1))" ]]
+    then
+      echo "$requested"
+      return 0
+    fi
+  fi
+
+  versions="$(curl -q -L -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/nextcloud/server/releases?per_page=100 | jq -r '.[].tag_name' | grep -v -e 'rc.$' -e 'beta.$' | sort -V)"
+  next_version="$(grep "v${current_maj}." <<<"${versions}" | tail -n 1 | tr -d 'v')"
+  next_version_maj="${next_version%%.*}"
+  next_version_min="${next_version#*.}"
+  next_version_min="${next_version_min%%.*}"
+
+  if [[ "${next_version}" == "${current}" ]]
+  then
+
+    if [[ "${supported_maj}" -le "${current_maj}" ]]
+    then
+      echo "$current"
+      # No update available
+      return 0
+    fi
+
+    next_version="$(grep "$v$((current_maj + 1))." <<< "${versions}" | tail -n 1 | tr -d 'v')"
+  fi
+
+  [[ -z "${next_version}" ]] || echo -n "${next_version}"
 }
 
 function get_ip()
@@ -449,7 +605,7 @@ function apt_install()
 }
 
 function is_docker() {
-  [[ -f /.dockerenv ]] || [[ "$DOCKERBUILD" == 1 ]]
+  [[ -f /.dockerenv ]] || [[ -f /.docker-image ]] || [[ "$DOCKERBUILD" == 1 ]]
 }
 
 function is_lxc() {
@@ -460,9 +616,12 @@ function notify_admin()
 {
   local header="$1"
   local msg="$2"
-  local admin=$(mysql -u root nextcloud -Nse "select uid from oc_group_user where gid='admin' limit 1;")
-  [[ "${admin}" == "" ]] && { echo "admin user not found" >&2; return 0; }
-  ncc notification:generate "${admin}" "${header}" -l "${msg}" || true
+  local admins=$(mysql -u root nextcloud -Nse "select uid from ${DB_PREFIX}group_user where gid='admin';")
+  [[ "${admins}" == "" ]] && { echo "admin user not found" >&2; return 0; }
+  while read -r admin
+  do
+    ncc notification:generate "${admin}" "${header}" -l "${msg}" || true
+  done <<<"$admins"
 }
 
 function save_maintenance_mode()
@@ -502,6 +661,23 @@ function get_ncpcfg()
 {
   local name="${1}"
   jq -r ".${name}" < "${NCPCFG}"
+}
+
+function get_nc_config_value() {
+  sudo -u www-data php -r "include(\"/var/www/nextcloud/config/config.php\"); echo(\$CONFIG[\"${1?Missing required argument: config key}\"]);"
+  #ncc config:system:get "${1?Missing required argument: config key}"
+}
+
+function clear_opcache() {
+  # shellcheck disable=SC2155
+  local data_dir="$(get_nc_config_value datadirectory)"
+  ! [[ -d "${data_dir:-/var/www/nextcloud/data}/.opcache" ]] || {
+    echo "Clearing opcache..."
+    echo "This can take some time. Please don't interrupt the process/close your browser tab."
+    rm -rf "${data_dir:-/var/www/nextcloud/data}/.opcache"/* "${data_dir:-/var/www/nextcloud/data}/.opcache"/.[!.]*
+    echo "Done."
+  }
+  service php${PHPVER}-fpm reload
 }
 
 # License

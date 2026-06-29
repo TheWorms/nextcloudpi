@@ -1,6 +1,6 @@
 <?php 
 ///
-// NextCloudPi Web Panel backend
+// NextcloudPi Web Panel backend
 //
 // Copyleft 2018 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 // GPL licensed (see end of file) * Use at your own risk!
@@ -16,12 +16,17 @@ $cfg_dir = '/usr/local/etc/ncp-config.d/';
 $l10nDir = "l10n";
 ignore_user_abort(true);
 
+function bash_escape_arg($arg): string
+{
+  return "'" . str_replace("'", "\\'", $arg) . "'";
+}
+
 //
 // language
 //
 require("L10N.php");
 try {
-  $l = new L10N($_SERVER["HTTP_ACCEPT_LANGUAGE"], $l10nDir, $cfg_dir);
+  $l = new L10N(($_SERVER["HTTP_ACCEPT_LANGUAGE"] ?? ''), $l10nDir, $cfg_dir);
 } catch (Exception $e) {
   die(json_encode("<p class='error'>Error while loading localizations!</p>"));
 }
@@ -40,6 +45,25 @@ if ( $_POST['action'] == "launch" && $_POST['config'] )
   if ( !$_POST['ref'] ) exit( '{ "output": "Invalid request" }' );
 
   $ncp_app = $_POST['ref'];
+
+  $needs_decryption = false;
+  $cfg_str = file_get_contents($cfg_dir . "nc-encrypt.cfg") or exit('{"output": "nc-encrypt read error"}');
+  $cfg = json_decode($cfg_str, true) or exit('{"output": "nc-encrypt config parse error"}');
+  $nc_encrypt_active = current(array_filter($cfg['params'], function($param) {
+    return $param['id'] === 'ACTIVE';
+  }));
+  if( $nc_encrypt_active['value'] === 'yes' ) {
+    $rc = -1;
+    $cmd_out = "";
+    exec('bash -c ". /usr/local/bin/ncp/SECURITY/nc-encrypt.sh && is_active"', $cmd_out, $rc);
+    if($rc !== 0) {
+      $needs_decryption = true;
+    }
+  }
+
+  if($needs_decryption && $ncp_app !== "nc-encrypt") {
+    exit('{ "output": "Instance is encrypted - only decryption can be performed"}');
+  }
 
   preg_match( '/^[0-9A-Za-z_-]+$/' , $_POST['ref'] , $matches )
     or exit( '{ "output": "Invalid input" , "token": "' . getCSRFToken() . '" }' );
@@ -66,7 +90,7 @@ if ( $_POST['action'] == "launch" && $_POST['config'] )
 
       // sanitize
       $val = trim(escapeshellarg($new_params[$id]),"'");
-      preg_match( '/[\'" &]/' , $val , $matches )
+      preg_match( '/[\&#;\'`|*?~<>^"()[{}$& ]/' , $val , $matches )
         and exit( '{ "output": "Invalid characters in input" , "token": "' . getCSRFToken() . '" }' );
 
       // save
@@ -86,7 +110,7 @@ if ( $_POST['action'] == "launch" && $_POST['config'] )
   echo ' "output": "" , ';
   echo ' "ret": ';
 
-  exec( 'bash -c "sudo /home/www/ncp-launcher.sh ' . $ncp_app . '"' , $output , $ret );
+  exec( 'bash -c "sudo /home/www/ncp-launcher.sh ' . bash_escape_arg($ncp_app) . '"' , $output , $ret );
   echo '"' . $ret . '" }';
 }
 
@@ -135,6 +159,15 @@ else if ( $_POST['action'] == "info" )
   echo ' "table": '       . json_encode( $table       ) . ' , ';
   echo ' "suggestions": ' . json_encode( $suggestions ) . ' , ';
   echo ' "ret": "'        . $ret                        . '" }';
+} else if ($_POST['action'] == "set-url") {
+  if (!$_POST['url']) {
+    exit('{ "output": "domain can\'t be empty", "ret": 1 }');
+  }
+  echo '{ "token": "' . getCSRFToken() . '",';               // Get new token
+  exec("/usr/bin/php /var/www/nextcloud/occ config:system:set overwrite.cli.url --value " . bash_escape_arg($_POST['url']),
+      $out, $ret);
+  echo  ' "out": "' . htmlspecialchars(join("\n", $out), ENT_QUOTES, "UTF-8") . '", ';
+  echo  ' "ret": "' . $ret . '"}';
 }
 
 //

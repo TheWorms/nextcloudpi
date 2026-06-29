@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Let's encrypt certbot installation on NextCloudPi
+# Let's encrypt certbot installation on NextcloudPi
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -9,7 +9,7 @@
 
 
 ncdir=/var/www/nextcloud
-nc_vhostcfg=/etc/apache2/sites-available/nextcloud.conf
+nc_vhostcfg=/etc/apache2/sites-available/001-nextcloud.conf
 ncp_vhostcfg=/etc/apache2/sites-available/ncp.conf
 letsencrypt=/usr/bin/letsencrypt
 

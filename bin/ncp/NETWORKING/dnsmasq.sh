@@ -11,31 +11,44 @@
 
 install()
 {
+  set -x
   apt-get update
   apt-get install --no-install-recommends -y dnsmasq
-  update-rc.d dnsmasq disable
-
-  [[ "$DOCKERBUILD" == 1 ]] && {
-    cat > /etc/services-available.d/100dnsmasq <<EOF
-#!/bin/bash
-
-source /usr/local/etc/library.sh
-
-[[ "\$1" == "stop" ]] && {
-  echo "stopping dnsmasq..."
-  service dnsmasq stop
-  exit 0
-}
-
-persistent_cfg /etc/dnsmasq.conf
-
-echo "Starting dnsmasq..."
-service dnsmasq start
-
-exit 0
+  sleep 10
+  rc=0
+  service dnsmasq status > /dev/null 2>&1 || rc=$?
+  if [[ $rc -eq 3 ]] && ! [[ "$INIT_SYSTEM" =~ ^("chroot"|"unknown")$ ]]
+  then
+    echo "Applying workaround for dnsmasq bug (compare issue #1446)"
+    mkdir -p /etc/systemd/resolved.conf.d
+    if systemctl status systemd-resolved
+    then
+  cat <<EOF > /etc/systemd/resolved.conf.d/nostublistener.conf
+[Resolve]
+DNSStubListener=no
 EOF
-    chmod +x /etc/services-available.d/100dnsmasq
-  }
+      [[ "$INIT_SYSTEM" != "systemd" ]] || systemctl restart systemd-resolved
+    elif systemctl status resolvconf
+    then
+      systemctl stop resolvconf
+      systemctl start dnsmasq
+      systemctl status dnsmasq
+    else
+      echo "dnsmasq failed to start and no workaround could be found. This means, the installer failed."
+      false
+    fi
+#    service systemd-resolved stop || true
+    systemctl start dnsmasq
+    systemctl status dnsmasq
+  fi
+
+  service dnsmasq stop
+  if [[ "$INIT_SYSTEM" == "systemd" ]] && systemctl list-unit-files resolvconf.service
+  then
+    systemctl start resolvconf
+  fi
+  update-rc.d dnsmasq disable || rm /etc/systemd/system/multi-user.target.wants/dnsmasq.service
+
   return 0
 }
 

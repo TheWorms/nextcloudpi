@@ -14,6 +14,11 @@ REDIS_MEM=3gb
 APTINSTALL="apt-get install -y --no-install-recommends"
 export DEBIAN_FRONTEND=noninteractive
 
+tmpl_max_transfer_time()
+{
+  find_app_param nc-nextcloud MAXTRANSFERTIME
+}
+
 install()
 {
   # During build, this step is run before ncp.sh. Avoid executing twice
@@ -22,10 +27,13 @@ install()
   # Optional packets for Nextcloud and Apps
   apt-get update
   $APTINSTALL lbzip2 iputils-ping jq wget
-  $APTINSTALL -t $RELEASE php-smbclient exfat-fuse exfat-utils                  # for external storage
+  # NOTE: php-smbclient in sury but not in Debian sources, we'll use the binary version
+  # https://docs.nextcloud.com/server/latest/admin_manual/configuration_files/external_storage/smb.html
+  $APTINSTALL -t $RELEASE smbclient exfat-fuse exfatprogs                      # for external storage
+  $APTINSTALL -t $RELEASE exfat-fuse exfatprogs                                # for external storage
   $APTINSTALL -t $RELEASE php${PHPVER}-exif                                     # for gallery
+  $APTINSTALL -t $RELEASE php${PHPVER}-bcmath                                   # for LDAP
   $APTINSTALL -t $RELEASE php${PHPVER}-gmp                                      # for bookmarks
-  $APTINSTALL -t $RELEASE php-bcmath                                            # for LDAP
   #$APTINSTALL -t imagemagick php${PHPVER}-imagick ghostscript   # for gallery
 
 
@@ -52,6 +60,10 @@ install()
   sed -i 's|# rename-command CONFIG ""|rename-command CONFIG ""|'  $REDIS_CONF
   sed -i "s|^port.*|port 0|"                                       $REDIS_CONF
   echo "maxmemory $REDIS_MEM" >> $REDIS_CONF
+  if [[ "$ARMBIAN_BUILD" == "yes" ]]
+  then
+    echo "ignore-warnings ARM64-COW-BUG" >> $REDIS_CONF
+  fi
   echo 'vm.overcommit_memory = 1' >> /etc/sysctl.conf
 
   if is_lxc; then
@@ -69,7 +81,26 @@ EOF
 
   service redis-server restart
   update-rc.d redis-server enable
-  service php${PHPVER}-fpm restart
+  clear_opcache
+
+  # NC service workers
+  cat > /etc/systemd/system/nextcloud-ai-worker@.service <<'EOF'
+[Unit]
+Description=Nextcloud AI worker %i
+After=network.target
+
+[Service]
+ExecStart=php occ background-job:worker -t 60 'OC\\TaskProcessing\\SynchronousBackgroundJob'
+Restart=always
+StartLimitInterval=60
+StartLimitBurst=10
+WorkingDirectory=/var/www/nextcloud
+User=www-data
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 
   # service to randomize passwords on first boot
   mkdir -p /usr/lib/systemd/system
@@ -142,21 +173,26 @@ configure()
   fi
 
   # create and configure opcache dir
-  local OPCACHEDIR=/var/www/nextcloud/data/.opcache
-  sed -i "s|^opcache.file_cache=.*|opcache.file_cache=$OPCACHEDIR|" /etc/php/${PHPVER}/mods-available/opcache.ini
-  mkdir -p $OPCACHEDIR
-  chown -R www-data:www-data $OPCACHEDIR
+  local OPCACHEDIR="$(
+    # shellcheck disable=SC2015
+    [ -f "${BINDIR}/CONFIG/nc-datadir.sh" ] && { source "${BINDIR}/CONFIG/nc-datadir.sh"; tmpl_opcache_dir; } || true
+  )"
+  if [[ -z "${OPCACHEDIR}" ]]
+  then
+    install_template "php/opcache.ini.sh" "/etc/php/${PHPVER}/mods-available/opcache.ini" --defaults
+  else
+    mkdir -p "$OPCACHEDIR"
+    chown -R www-data:www-data "$OPCACHEDIR"
+    install_template "php/opcache.ini.sh" "/etc/php/${PHPVER}/mods-available/opcache.ini"
+  fi
 
   ## RE-CREATE DATABASE TABLE
   # launch mariadb if not already running (for docker build)
-  if ! pgrep -c mysqld &>/dev/null; then
+  if ! [[ -f /run/mysqld/mysqld.pid ]]; then
     echo "Starting mariaDB"
     mysqld &
     local db_pid=$!
   fi
-
-  # wait for mariadb
-  pgrep -x mysqld &>/dev/null || echo "mariaDB process not found"
 
   while :; do
     [[ -S /var/run/mysqld/mysqld.sock ]] && break
@@ -181,11 +217,11 @@ EOF
 
 ## SET APACHE VHOST
   echo "Setting up Apache..."
-  install_template nextcloud.conf.sh /etc/apache2/sites-available/nextcloud.conf --allow-fallback || {
+  install_template nextcloud.conf.sh /etc/apache2/sites-available/001-nextcloud.conf --allow-fallback || {
       echo "ERROR: Parsing template failed. Nextcloud will not work."
       exit 1
   }
-  a2ensite nextcloud
+  a2ensite 001-nextcloud
 
   cat > /etc/apache2/sites-available/000-default.conf <<'EOF'
 <VirtualHost _default_:80>
@@ -212,20 +248,7 @@ EOF
 
   arch="$(uname -m)"
   [[ "${arch}" =~ "armv7" ]] && arch="armv7"
-  cat > /etc/systemd/system/notify_push.service <<EOF
-[Unit]
-Description = Push daemon for Nextcloud clients
-After = mysql.service
-
-[Service]
-Environment = PORT=7867
-Environment = NEXTCLOUD_URL=https://localhost
-ExecStart = /var/www/nextcloud/apps/notify_push/bin/"${arch}"/notify_push --allow-self-signed /var/www/nextcloud/config/config.php
-User=www-data
-
-[Install]
-WantedBy = multi-user.target
-EOF
+  install_template systemd/notify_push.service.sh /etc/systemd/system/notify_push.service
   [[ -f /.docker-image ]] || systemctl enable notify_push
 
   # some added security
@@ -260,6 +283,7 @@ EOF
 
   # dettach mysql during the build
   if [[ "${db_pid}" != "" ]]; then
+    echo "Shutting down mariaDB (${db_pid})"
     mysqladmin -u root shutdown
     wait "${db_pid}"
   fi

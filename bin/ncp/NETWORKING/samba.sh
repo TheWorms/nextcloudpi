@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SAMBA server for Raspbian 
+# SAMBA server for Raspbian
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -33,26 +33,26 @@ EOF
 
 configure()
 {
-  [[ $ACTIVE != "yes" ]] && { 
+  [[ $ACTIVE != "yes" ]] && {
     service smbd stop
     update-rc.d smbd disable
     update-rc.d nmbd disable
     echo "SMB disabled"
     return
-  } 
+  }
 
   # CHECKS
   ################################
   local DATADIR
-  DATADIR=$( sudo -u www-data php /var/www/nextcloud/occ config:system:get datadirectory ) || {
-    echo -e "Error reading data directory. Is NextCloud running and configured?"; 
+  DATADIR=$( get_nc_config_value datadirectory ) || {
+    echo -e "Error reading data directory. Is NextCloud running and configured?";
     return 1;
   }
   [ -d "$DATADIR" ] || { echo -e "data directory $DATADIR not found"   ; return 1; }
 
   # CONFIG
   ################################
-  
+
   # remove files from this line to the end
   sed -i '/# NextCloudPi automatically/,/\$/d' /etc/samba/smb.conf
 
@@ -63,11 +63,11 @@ EOF
 
   # create a share per Nextcloud user
   local USERS=()
-  while read -r path; do 
-    USERS+=( "$( basename $( dirname "$path" ) )" )
+  while read -r path; do
+    USERS+=( "$( basename "$(dirname "$path")" )" )
   done < <( ls -d "$DATADIR"/*/files )
 
-  for user in ${USERS[@]}; do
+  for user in "${USERS[@]}"; do
     # Exclude users not matching group filter (if enabled)
     if [[ -n "$FILTER_BY_GROUP" ]] \
     && [[ -z "$(ncc user:info "$user" --output=json | jq ".groups[] | select( . == \"${FILTER_BY_GROUP}\" )")" ]]
@@ -98,10 +98,10 @@ EOF
 
     ## create user with no login if it doesn't exist
     id "$user" &>/dev/null || adduser --disabled-password --force-badname --gecos "" "$user" || return 1
-    echo -e "$PWD\n$PWD" | smbpasswd -s -a $user
+    echo -e "$PWD\n$PWD" | smbpasswd -s -a "${user}"
 
-    usermod -aG www-data $user
-    sudo chmod g+w $DIR
+    usermod -aG www-data "${user}"
+    sudo chmod g+w "${DIR}"
   done
 
   update-rc.d smbd defaults

@@ -1,6 +1,6 @@
 <?php
 ///
-// NextCloudPi Web Panel Side bar
+// NextcloudPi Web Panel Side bar
 //
 // Copyleft 2018 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 // GPL licensed (see end of file) * Use at your own risk!
@@ -181,6 +181,13 @@ function print_sidebar( $l /* translations l10n object */, $ticks /* wether to c
       $ncp_app  = pathinfo($script, PATHINFO_FILENAME);
       $cfg_file = $cfg_dir . $ncp_app . ".cfg";
       $cfg      = json_decode(file_get_contents($cfg_file), true);
+
+      try {
+        sizeof($cfg['params']);
+      } catch (TypeError $e) {
+        error_log("Failed loading script '$script'!, Config file '$cfg_file' could not be found or failed to be parsed.\n");
+        continue;
+      }
 
       $active = "";
       if ( $ticks ) {

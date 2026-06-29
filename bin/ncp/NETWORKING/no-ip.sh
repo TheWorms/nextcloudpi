@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# no-ip.org installation on NextCloudPi
+# no-ip.org installation on NextcloudPi
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -14,8 +14,8 @@ install()
   apt-get update
   apt-get install --no-install-recommends -y make gcc libc-dev
 
-  local TMPDIR="$( mktemp -d /tmp/noip.XXXXXX )"
-  cd "$TMPDIR"
+  local TEMPDIR="$( mktemp -d /tmp/noip.XXXXXX )"
+  cd "$TEMPDIR"
   wget -O- --content-disposition https://github.com/nachoparker/noip-DDNS/archive/master/latest.tar.gz \
   | tar -xz \
   || return 1
@@ -41,7 +41,7 @@ EOF
 
   chmod +x /etc/init.d/noip2
   cd -
-  rm -r "$TMPDIR"
+  rm -r "$TEMPDIR"
 
   update-rc.d noip2 defaults
   update-rc.d noip2 disable

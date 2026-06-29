@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Updater for NextCloudPi
+# Updater for NextcloudPi
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -10,47 +10,55 @@
 
 source /usr/local/etc/library.sh
 
-set -e
+set -e$DBG
 
-CONFDIR=/usr/local/etc/ncp-config.d/
+
+if is_docker
+then
+  echo "WARNING: Docker images should be updated by replacing the container from the latest docker image" \
+    "(refer to the documentation for instructions: https://docs.nextcloudpi.com)." \
+    "If you are sure that you know what you are doing, you can still execute the update script by running it like this:"
+  echo "> ALLOW_UPDATE_SCRIPT=1 ncp-update"
+  [[ "$ALLOW_UPDATE_SCRIPT" == "1" ]] || exit 1
+fi
+
+CONFDIR=/usr/local/etc/ncp-config.d
 UPDATESDIR=updates
 
-# don't make sense in a docker container
-EXCL_DOCKER="
+# don't make sense in containers
+EXCL_CONTAINER="
 nc-automount
 nc-format-USB
-nc-datadir
-nc-database
 nc-ramlogs
 nc-swapfile
 nc-static-IP
 nc-wifi
-UFW
 nc-snapshot
 nc-snapshot-auto
 nc-snapshot-sync
 nc-restore-snapshot
-nc-audit
 nc-hdd-monitor
+nc-hdd-test
 nc-zram
+NFS
+"
+
+# don't make sense in a docker container
+EXCL_DOCKER="
+$EXCL_CONTAINER
+nc-autoupdate-ncp
+nc-update
+nc-datadir
+nc-database
+UFW
+nc-audit
 SSH
 fail2ban
-NFS
-metrics
-"
-
-if is_docker &>/dev/null; then
-# in docker, just remove the volume for this
-EXCL_DOCKER+="
 nc-nextcloud
 nc-init
-"
-
-# better use a designated container
-EXCL_DOCKER+="
 samba
 "
-fi
+
 
 # check running apt or apt-get
 pgrep -x "apt|apt-get" &>/dev/null && { echo "apt is currently running. Try again later";  exit 1; }
@@ -62,11 +70,14 @@ source /usr/local/etc/library.sh
 mkdir -p "$CONFDIR"
 
 # prevent installing some ncp-apps in the containerized versions
-if is_docker || is_lxc; then
-  for opt in $EXCL_DOCKER; do
-    touch $CONFDIR/$opt.cfg
-  done
-fi
+
+EXCL_APPS=""
+is_docker && EXCL_APPS="$EXCL_DOCKER"
+is_lxc && EXCL_APPS="$EXCL_CONTAINER"
+
+for opt in $EXCL_APPS; do
+  touch $CONFDIR/$opt.cfg
+done
 
 # copy all files in bin and etc
 cp -r bin/* /usr/local/bin/
@@ -140,12 +151,8 @@ chmod 770                  /var/www/ncp-web
 
 # install NC app
 rm -rf /var/www/ncp-app
-cp -r ncp-app /var/www/
-
-# install ncp-previewgenerator
-rm -rf /var/www/ncp-previewgenerator
-cp -r ncp-previewgenerator /var/www/
-chown -R www-data:         /var/www/ncp-previewgenerator
+mkdir -p /var/www/ncp-app
+cp -r ncp-app/{appinfo,css,img,js,lib,templates} /var/www/ncp-app/
 
 # copy NC app to nextcloud directory and enable it
 rm -rf /var/www/nextcloud/apps/nextcloudpi
@@ -154,7 +161,7 @@ chown -R www-data:     /var/www/nextcloud/apps/nextcloudpi
 
 # remove unwanted ncp-apps for containerized versions
 if is_docker || is_lxc; then
-  for opt in $EXCL_DOCKER; do
+  for opt in $EXCL_APPS; do
     rm $CONFDIR/$opt.cfg
     find /usr/local/bin/ncp -name "$opt.sh" -exec rm '{}' \;
   done
@@ -174,6 +181,11 @@ fi
 # update to the latest NC version
 is_active_app nc-autoupdate-nc && run_app nc-autoupdate-nc
 
+start_notify_push
+
+# Refresh ncp config values
+source /usr/local/etc/library.sh
+
 # check dist-upgrade
 check_distro "$NCPCFG" && check_distro etc/ncp.cfg || {
   php_ver_new=$(jq -r '.php_version'   < etc/ncp.cfg)
@@ -184,9 +196,7 @@ check_distro "$NCPCFG" && check_distro etc/ncp.cfg || {
   cfg="$(jq '.release       = "'$release_new'"' <<<"$cfg")"
   echo "$cfg" > /usr/local/etc/ncp-recommended.cfg
 
-  [[ -f /.dockerenv ]] && \
-    msg="Update to $release_new available. Get the latest container to upgrade" || \
-    msg="Update to $release_new available. Type 'sudo ncp-dist-upgrade' to upgrade"
+  msg="Update to $release_new available. Type 'sudo ncp-dist-upgrade' to upgrade"
   echo "${msg}"
   notify_admin "New distribution available" "${msg}"
   wall "${msg}"
@@ -202,8 +212,8 @@ chmod +x /etc/update-motd.d/30ncp-dist-upgrade
 # Remove redundant opcache configuration.
 # Related to https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=815968
 # Bug #416 reappeared after we moved to php7.3 and debian buster packages.
-[[ "$( ls -l /etc/php/7.3/fpm/conf.d/*-opcache.ini |  wc -l )" -gt 1 ]] && rm "$( ls /etc/php/7.3/fpm/conf.d/*-opcache.ini | tail -1 )"
-[[ "$( ls -l /etc/php/7.3/cli/conf.d/*-opcache.ini |  wc -l )" -gt 1 ]] && rm "$( ls /etc/php/7.3/cli/conf.d/*-opcache.ini | tail -1 )"
+[[ "$( ls -l /etc/php/"${PHPVER}"/fpm/conf.d/*-opcache.ini 2> /dev/null |  wc -l )" -gt 1 ]] && rm "$( ls /etc/php/"${PHPVER}"/fpm/conf.d/*-opcache.ini | tail -1 )"
+[[ "$( ls -l /etc/php/"${PHPVER}"/cli/conf.d/*-opcache.ini 2> /dev/null |  wc -l )" -gt 1 ]] && rm "$( ls /etc/php/"${PHPVER}"/cli/conf.d/*-opcache.ini | tail -1 )"
 
 exit 0
 

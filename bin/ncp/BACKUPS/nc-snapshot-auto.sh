@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# NextCloudPi scheduled datadir BTRFS snapshots
+# NextcloudPi scheduled datadir BTRFS snapshots
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -26,7 +26,10 @@ configure()
 
   cat > /etc/cron.hourly/btrfs-snp <<EOF
 #!/bin/bash
-DATADIR=\$(ncc config:system:get datadirectory) || {
+
+source /usr/local/etc/library.sh
+
+DATADIR="\$(get_nc_config_value datadirectory)" || {
   echo -e "Error reading data directory. Is NextCloud running and configured?";
   exit 1;
 }

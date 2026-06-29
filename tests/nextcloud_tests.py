@@ -11,21 +11,25 @@ Use at your own risk!
 
 More at https://ownyourbits.com
 """
-
+import json
 import sys
-import time
-import urllib
 import os
 import getopt
 import configparser
 import signal
 import re
+import time
+from pathlib import Path
+
 from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.webdriver import WebDriver
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import NoSuchElementException, WebDriverException, TimeoutException
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException, WebDriverException, TimeoutException, ElementNotInteractableException
 from typing import List, Tuple
 import traceback
 
@@ -43,25 +47,34 @@ class tc:
     normal='\033[0m'
 
 
+class TestFailed(Exception):
+    pass
+
+
 class Test:
-    title  = "test"
+    title = "test"
 
     def new(self, title):
         self.title = title
         print("[check] " + "{:16}".format(title), end=' ', flush = True)
 
-    def check(self, expression):
-        if expression:
+    def check(self, expression, msg=None):
+        if expression and not isinstance(expression, Exception):
             print(tc.green + "ok" + tc.normal)
             self.log("ok")
         else:
             print(tc.red + "error" + tc.normal)
             self.log("error")
-            sys.exit(1)
+            exc_args = [f"'{self.title}' failed"]
+            if isinstance(expression, Exception):
+                exc_args.append(expression)
+            if msg is not None:
+                exc_args.append(msg)
+            raise TestFailed(*exc_args)
 
-    def report(self, title, expression):
+    def report(self, title, expression, msg=None):
         self.new(title)
-        self.check(expression)
+        self.check(expression, msg=msg)
 
     def log(self, result):
         config = configparser.ConfigParser()
@@ -76,8 +89,12 @@ class Test:
 
 def usage():
     "Print usage"
-    print("usage: nextcloud_tests.py [--new] [ip]")
-    print("--new removes saved configuration")
+    print("usage: nextcloud_tests.py [-h|--help] [-n|--new] [--no-gui] [--skip-release-check] [--wait-multiplier=1] [--return-after=0] [ip]")
+    print("  -n|--new removes saved configuration")
+    print("  -h|--help show this message")
+    print("  --no-gui run selenium in headless mode")
+    print("  --skip-release-check skip release check")
+    print("  --wait-multiplier=1 Multiply all wait times by this value")
 
 
 def signal_handler(sig, frame):
@@ -102,72 +119,249 @@ class VisibilityOfElementLocatedByAnyLocator:
 class ConfigTestFailure(Exception):
     pass
 
+def is_admin_notifications_checkbox(item: WebElement):
+    try:
+        input_item = item.find_element(By.TAG_NAME, "input")
+        return input_item.get_attribute("name") == "adminNotifications"
+    except:
+        return False
 
-def test_nextcloud(IP, nc_port, driver):
+
+def close_first_run_wizard(driver: WebDriver, wait_multiplier=1):
+    wait = WebDriverWait(driver, 20 * wait_multiplier)
+    first_run_wizard = None
+    try:
+        first_run_wizard = driver.find_element(By.CSS_SELECTOR, "#firstrunwizard")
+    except NoSuchElementException:
+        pass
+    if first_run_wizard is not None and first_run_wizard.is_displayed():
+        for i in range(3):
+            try:
+                wait.until(VisibilityOfElementLocatedByAnyLocator([(By.CSS_SELECTOR, '.modal-container__content button[aria-label=Close]'),
+                                                                   (By.CLASS_NAME, "modal-container__close"),
+                                                                   (By.CLASS_NAME, "first-run-wizard__close-button")]))
+            except TimeoutException as e:
+                if i == 3:
+                    raise e
+        try:
+            overlay_close_btn = driver.find_element(By.CSS_SELECTOR, '.modal-container__content button[aria-label=Close]')
+            overlay_close_btn.click()
+        except (NoSuchElementException, ElementNotInteractableException):
+            try:
+                overlay_close_btn = driver.find_element(By.CLASS_NAME, "modal-container__close")
+                overlay_close_btn.click()
+            except (NoSuchElementException, ElementNotInteractableException):
+                overlay_close_btn = driver.find_element(By.CLASS_NAME, "first-run-wizard__close-button")
+                overlay_close_btn.click()
+
+        time.sleep(3)
+
+
+def test_nextcloud(IP: str, nc_port: str, driver: WebDriver, skip_release_check: bool, wait_multiplier=1):
     """ Login and assert admin page checks"""
     test = Test()
-    print(driver.desired_capabilities['timeouts'])
     test.new("nextcloud page")
     try:
         driver.get(f"https://{IP}:{nc_port}/index.php/settings/admin/overview")
-    except:
-        test.check(False)
-        print(tc.red + "error:" + tc.normal + " unable to reach " + tc.yellow + IP + tc.normal)
-        sys.exit(1)
-    test.check("NextCloudPi" in driver.title)
+    except Exception as e:
+        test.check(e, msg=f"{tc.red}error:{tc.normal} unable to reach {tc.yellow + IP + tc.normal}")
+    test.check("NextCloudPi" in driver.title, msg="NextCloudPi not found in page title!")
     trusted_domain_str = "You are accessing the server from an untrusted domain"
-    test.report("trusted domain", trusted_domain_str not in driver.page_source)
+    test.report("trusted domain", trusted_domain_str not in driver.page_source, f"Domain '{IP}' is not trusted")
     try:
-        driver.find_element_by_id("user").send_keys(nc_user)
-        driver.find_element_by_id("password").send_keys(nc_pass)
-        driver.find_element_by_id("submit-form").click()
+        driver.find_element(By.ID, "user").send_keys(nc_user)
+        driver.find_element(By.ID, "password").send_keys(nc_pass)
+        driver.find_element(By.ID, "submit-form").click()
     except NoSuchElementException:
         try:
-            driver.find_element_by_id("submit").click()
+            driver.find_element(By.ID, "submit").click()
         except NoSuchElementException:
-            pass
+            try:
+                driver.find_element(By.CSS_SELECTOR, ".login-form button[type=submit]").click()
+            except NoSuchElementException:
+                pass
 
-    test.report("password", "Wrong password" not in driver.page_source)
+    test.report("password", "Wrong password" not in driver.page_source, msg="Failed to login with provided password")
 
     test.new("settings config")
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 60 * wait_multiplier * 5)
+    try:
+        wait.until(VisibilityOfElementLocatedByAnyLocator([(By.CSS_SELECTOR, "#security-warning.settings-section")]))
+        settings_config_check(wait, test)
+    except TimeoutException:
+        settings_config_check_pre32(wait, test)
+
+    close_first_run_wizard(driver, wait_multiplier)
+
+    test.new("admin section (1)")
+    try:
+        driver.get(f"https://{IP}:{nc_port}/index.php/settings/admin")
+    except Exception as e:
+        test.check(e, msg=f"{tc.red}error:{tc.normal} unable to reach {tc.yellow + IP + tc.normal}")
+    old_admin_notifications_value = None
+    list_items = driver.find_elements(By.CSS_SELECTOR, "#nextcloudpi li")
+    try:
+        wait.until(lambda drv: drv.find_element(By.ID, "nextcloudpi").is_displayed())
+        expected = {
+            "ncp_version": False,
+            "php_version": False,
+            "debian_release": False,
+            "canary": False,
+            "admin_notifications": False,
+            # "usage_surveys": False,
+            "notification_accounts": False
+        }
+        version_re = re.compile(r'^(v\d+\.\d+\.\d+)$')
+        with (Path(__file__).parent / '../etc/ncp.cfg').open('r') as cfg_file:
+            ncp_cfg = json.load(cfg_file)
+        for li in list_items:
+            try:
+                inp = li.find_element(By.TAG_NAME, "input")
+                inp_name = inp.get_attribute("name")
+                inp_value = inp.get_attribute("value") if inp.get_attribute("type") != "checkbox" else inp.is_selected()
+                if inp_name == "canary":
+                    expected["canary"] = True
+                elif inp_name == "adminNotifications":
+                    old_admin_notifications_value = inp_value
+                    expected["admin_notifications"] = True
+                elif inp_name == "usageSurveys":
+                    expected["usage_surveys"] = True
+                elif inp_name == "notificationAccounts":
+                    expected["notification_accounts"] = True
+            except:
+                divs = li.find_elements(By.TAG_NAME, "div")
+                if 'ncp version' in divs[0].text.lower() and version_re.match(divs[1].text):
+                    expected['ncp_version'] = True
+                elif 'php version' in divs[0].text.lower() and divs[1].text == ncp_cfg['php_version']:
+                    expected['php_version'] = True
+                elif 'debian release' in divs[0].text.lower():
+                    if divs[1].text == ncp_cfg['release'] or skip_release_check:
+                        expected['debian_release'] = True
+                    else:
+                        print(f"{tc.yellow}{divs[1].text} != {ncp_cfg['release']}")
+        failed = list(map(lambda item: item[0], filter(lambda item: not item[1], expected.items())))
+        test.check(len(failed) == 0, f"checks failed for admin section: [{', '.join(failed)}]")
+    except Exception as e:
+        test.check(e)
+    test.new("admin section (2)")
+    wait = WebDriverWait(driver, 10 * wait_multiplier)
+    try:
+        li = next(filter(is_admin_notifications_checkbox, list_items))
+        li.find_element(By.TAG_NAME, "input").click()
+        time.sleep(15)
+        wait.until(lambda drv: drv.find_element(By.CSS_SELECTOR, "#nextcloudpi .error-message:not(.hidden)"))
+        error_box = driver.find_element(By.CSS_SELECTOR, "#nextcloudpi .error-message")
+        test.check(False, str(error_box.text))
+    except Exception as e:
+        if isinstance(e, TestFailed):
+            raise e
+        test.check(True)
+
+    test.new("admin section (3)")
+    try:
+        driver.refresh()
+    except Exception as e:
+        test.check(e, msg=f"{tc.red}error:{tc.normal} unable to reach {tc.yellow + IP + tc.normal}")
+    try:
+        list_items = driver.find_elements(By.CSS_SELECTOR, "#nextcloudpi li")
+        li = next(filter(is_admin_notifications_checkbox, list_items))
+        test.check(li.find_element(By.TAG_NAME, "input").is_selected() != old_admin_notifications_value,
+                   "Toggling admin notifications didn't work")
+    except Exception as e:
+        test.check(e)
+
+def settings_config_check_warnings(warnings):
+    for warning in warnings:
+        if re.match(r'.*Server has no maintenance window start time configured.*', warning.text) \
+                or re.match(r'.*Server has no maintenance window start time configured.*', warning.text):
+            continue
+        elif re.match(r'.*Could not check for JavaScript support.*', warning.text):
+            continue
+        # TODO: Solve redis error logs at the source
+        elif re.match(r'.*\d+ (errors?|warnings?) in the logs since.*', warning.text):
+            continue
+        else:
+            raise ConfigTestFailure(f"WARN: {warning.text}")
+
+def settings_config_check_infos(infos):
+    for info in infos:
+        if re.match(r'.*Your installation has no default phone region set.*', info.text) \
+                or re.match(r'The PHP module "imagick" is not enabled', info.text) \
+                or re.match(r'The PHP module "imagick" in this instance has no SVG support.*', info.text) \
+                or re.match(r'.*\d+ (errors?|warnings?) in the logs since.*', info.text) \
+                or re.match(r'Second factor providers are available but two-factor authentication is not enforced.', info.text):
+            continue
+        else:
+            print(f'INFO: {info.text}')
+            php_modules = info.find_elements(By.CSS_SELECTOR, "li")
+            if len(php_modules) != 1:
+                raise ConfigTestFailure(f"Could not find the list of php modules within the info message "
+                                        f"'{info.text}'")
+            if php_modules[0].text != "imagick":
+                raise ConfigTestFailure("The list of php_modules does not equal [imagick]")
+
+
+def settings_config_check_errors(errors):
+    if len(errors) == 0:
+        return
+    for error in errors:
+        print(f'ERROR: {error.text}')
+    raise ConfigTestFailure("Neither the warnings nor the ok status is displayed "
+                            "(so there are probably errors or the page is broken)")
+
+
+def settings_config_check(wait, test):
+    try:
+        wait.until_not(VisibilityOfElementLocatedByAnyLocator([(By.CSS_SELECTOR, "#security-warning .loading-icon")]))
+        warnings = driver.find_elements(By.CSS_SELECTOR, "#security-warning li.settings-setup-checks-item--warning .settings-setup-checks-item__description")
+        settings_config_check_warnings(warnings)
+        infos = driver.find_elements(By.CSS_SELECTOR, "#security-warning li.settings-setup-checks-item--info .settings-setup-checks-item__description")
+        settings_config_check_infos(infos)
+        errors = driver.find_elements(By.CSS_SELECTOR, "#security-warning li.settings-setup-checks-item--error .settings-setup-checks-item__description")
+        settings_config_check_errors(errors)
+
+        test.check(True)
+    except Exception as e:
+        print(driver.find_element(By.CSS_SELECTOR, "#security-warning").get_attribute("innerHTML"))
+        test.check(e)
+
+
+def settings_config_check_pre32(wait, test):
     try:
         wait.until(VisibilityOfElementLocatedByAnyLocator([(By.CSS_SELECTOR, "#security-warning-state-ok"),
                                                            (By.CSS_SELECTOR, "#security-warning-state-warning"),
-                                                           (By.CSS_SELECTOR, "#security-warning-state-error")]))
+                                                           (By.CSS_SELECTOR, "#security-warning-state-error"),
+                                                           (By.CSS_SELECTOR, "#security-warning-state-failure")]))
 
-        element_ok = driver.find_element_by_id("security-warning-state-ok")
-        element_warn = driver.find_element_by_id("security-warning-state-warning")
+        element_ok = driver.find_element(By.ID, "security-warning-state-ok")
+        element_warn = driver.find_element(By.ID, "security-warning-state-warning")
 
         if element_warn.is_displayed():
 
-            if driver.find_element_by_css_selector("#postsetupchecks > .errors").is_displayed() \
-                    or driver.find_element_by_css_selector("#postsetupchecks > .warnings").is_displayed():
-                raise ConfigTestFailure("There have been errors or warnings")
+            warnings = driver.find_elements(By.CSS_SELECTOR, "#postsetupchecks > .warnings > li")
+            settings_config_check_warnings(warnings)
 
-            infos = driver.find_elements_by_css_selector("#postsetupchecks > .info > li")
-            for info in infos:
-                if re.match(r'.*Your installation has no default phone region set.*', info.text):
-                    continue
-                else:
+            if driver.find_element(By.CSS_SELECTOR, "#postsetupchecks > .errors").is_displayed():
+                try:
+                    first_error = driver.find_element(By.CSS_SELECTOR, "#postsetupchecks > .errors > li")
+                except NoSuchElementException:
+                    first_error = None
+                raise ConfigTestFailure(f"ERROR: {first_error.text if first_error is not None else 'unexpected error'}")
 
-                    php_modules = info.find_elements_by_css_selector("li")
-                    if len(php_modules) != 1:
-                        raise ConfigTestFailure(f"Could not find the list of php modules within the info message "
-                                                f"'{infos[0].text}'")
-                    if php_modules[0].text != "imagick":
-                        raise ConfigTestFailure("The list of php_modules does not equal [imagick]")
+            infos = driver.find_elements(By.CSS_SELECTOR, "#postsetupchecks > .info > li")
+            settings_config_check_infos(infos)
+
 
         elif not element_ok.is_displayed():
-            raise ConfigTestFailure("Neither the warnings nor the ok status is displayed "
-                                    "(so there are probably errors or the page is broken)")
+            errors = driver.find_elements(By.CSS_SELECTOR, "#postsetupchecks > .errors > li")
+            settings_config_check_errors(errors)
 
         test.check(True)
 
     except Exception as e:
-        test.check(False)
-        print(e)
-        print(traceback.format_exc())
+
+        print(driver.find_element(By.CSS_SELECTOR, "#security-warning").get_attribute("innerHTML"))
+        test.check(e)
 
 
 if __name__ == "__main__":
@@ -175,11 +369,21 @@ if __name__ == "__main__":
 
     # parse options
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'hn', ['help'])
+        opts, args = getopt.getopt(sys.argv[1:], 'hn', ['help', 'new', 'no-gui', 'skip-release-check', 'wait-multiplier='])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
 
+    skip_release_check = False
+    options = webdriver.FirefoxOptions()
+    webdriver_exec_path = None
+    if 'GECKODRIVER_PATH' in os.environ:
+        print(f"Setting geckodriver from env ({os.environ['GECKODRIVER_PATH']})")
+        webdriver_exec_path = os.environ['GECKODRIVER_PATH']
+    if 'FF_BINARY_PATH' in os.environ:
+        print(f"Setting firefox binary from env ({os.environ['FF_BINARY_PATH']})")
+        options.binary_location = os.environ['FF_BINARY_PATH']
+    wait_multiplier = 1
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             usage()
@@ -187,6 +391,12 @@ if __name__ == "__main__":
         elif opt in ('-n', '--new'):
             if os.path.exists(test_cfg):
                 os.unlink(test_cfg)
+        elif opt == '--no-gui':
+            options.add_argument("-headless")
+        elif opt == '--skip-release-check':
+            skip_release_check = True
+        elif opt == '--wait-multiplier':
+            wait_multiplier = int(arg)
         else:
             usage()
             sys.exit(2)
@@ -222,11 +432,21 @@ if __name__ == "__main__":
     print("Nextcloud tests " + tc.yellow + IP + tc.normal)
     print("---------------------------")
 
-    driver = webdriver.Firefox(service_log_path='/dev/null')
+    if webdriver_exec_path is None:
+        driver = webdriver.Firefox(options=options)
+    else:
+        driver = webdriver.Firefox(options=options, service=Service(webdriver_exec_path))
+    failed=False
     try:
-        test_nextcloud(IP, nc_port, driver)
+        test_nextcloud(IP, nc_port, driver, skip_release_check, wait_multiplier)
+    except Exception as e:
+        print(e)
+        print(traceback.format_exc())
+        failed=True
     finally:
         driver.close()
+    if failed:
+        sys.exit(1)
 
 # License
 #

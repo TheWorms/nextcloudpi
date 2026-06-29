@@ -14,6 +14,7 @@ More at https://ownyourbits.com
 
 import sys
 import time
+import traceback
 import urllib
 import os
 import getopt
@@ -22,8 +23,10 @@ import signal
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.firefox.options import Options
 from selenium.common.exceptions import UnexpectedAlertPresentException
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
@@ -44,7 +47,7 @@ class tc:
 
 def usage():
     "Print usage"
-    print("usage: activation_tests.py [ip [nc-port [admin-port]]]")
+    print("usage: activation_tests.py [-t|--timeout <timeout>] [-h|--no-gui] [ip [nc-port [admin-port]]]")
 
 
 class Test:
@@ -88,19 +91,22 @@ def signal_handler(sig, frame):
         sys.exit(0)
 
 
-def test_activation(IP, nc_port, admin_port):
+def test_activation(IP, nc_port, admin_port, options, webdriver_exec_path=None, wait_timeout=120):
     """ Activation process checks"""
+    driver_kwargs={}
+    if webdriver_exec_path is not None:
+        driver_kwargs['service'] = Service(webdriver_exec_path)
 
     # activation page
     test = Test()
-    driver = webdriver.Firefox(service_log_path='/dev/null')
+    driver = webdriver.Firefox(options=options, **driver_kwargs)
     driver.implicitly_wait(5)
     test.new("activation opens")
     driver.get(f"https://{IP}:{nc_port}")
     test.check("NextCloudPi Activation" in driver.title)
     try:
-        ncp_pass = driver.find_element_by_id("ncp-pwd").get_attribute("value")
-        nc_pass = driver.find_element_by_id("nc-pwd").get_attribute("value")
+        ncp_pass = driver.find_element(By.ID, "ncp-pwd").get_attribute("value")
+        nc_pass = driver.find_element(By.ID, "nc-pwd").get_attribute("value")
 
         config = configparser.ConfigParser()
         if not config.has_section('credentials'):
@@ -112,7 +118,7 @@ def test_activation(IP, nc_port, admin_port):
         with open(test_cfg, 'w') as configfile:
             config.write(configfile)
 
-        driver.find_element_by_id("activate-ncp").click()
+        driver.find_element(By.ID, "activate-ncp").click()
         test.report("activation click", True)
     except:
         ncp_pass = ""
@@ -120,26 +126,33 @@ def test_activation(IP, nc_port, admin_port):
 
     test.new("activation ends")
     try:
-        wait = WebDriverWait(driver, 60)
-        wait.until(EC.text_to_be_present_in_element((By.ID,'error-box'), "ACTIVATION SUCCESSFUL"))
+        wait = WebDriverWait(driver, wait_timeout)
+        wait.until(EC.text_to_be_present_in_element((By.ID, 'error-box'), "ACTIVATION SUCCESSFUL"))
         test.check(True)
-    except TimeoutException: 
+    except TimeoutException:
         test.check(False)
     except:
         test.check(True)
     try:
         driver.close()
     except Exception as e:
+        traceback.print_exception(e)
         print(f"Could not close driver: {e}")
 
     # ncp-web
     test.new("ncp-web")
-    driver = webdriver.Firefox(service_log_path='/dev/null')
+    if webdriver_exec_path is not None:
+        driver_kwargs['service'] = Service(webdriver_exec_path)
+    driver = webdriver.Firefox(options=options, **driver_kwargs)
+    driver.implicitly_wait(30)
     try:
         driver.get(f"https://ncp:{urllib.parse.quote_plus(ncp_pass)}@{IP}:{admin_port}")
     except UnexpectedAlertPresentException:
         pass
-    test.check("NextCloudPi Panel" in driver.title)
+    except Exception as e:
+        print(f"WARN: Exception while attempting to get ncp-web: '{e}'")
+        raise e
+    test.check("NextcloudPi Panel" in driver.title or "NextCloudPi Panel" in driver.title)
     test.report("first run wizard", is_element_present(driver, By.ID, "first-run-wizard"))
 
     driver.close()
@@ -150,15 +163,28 @@ if __name__ == "__main__":
 
     # parse options
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'h', ['help'])
+        opts, args = getopt.getopt(sys.argv[1:], 'ht:', ['help', 'timeout=', 'no-gui'])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
 
+    arg_timeout = 120
+    options = webdriver.FirefoxOptions()
+    webdriver_exec_path = None
+    if 'GECKODRIVER_PATH' in os.environ:
+        print(f"Setting geckodriver from env ({os.environ['GECKODRIVER_PATH']})")
+        webdriver_exec_path = os.environ['GECKODRIVER_PATH']
+    if 'FF_BINARY_PATH' in os.environ:
+        print(f"Setting firefox binary from env ({os.environ['FF_BINARY_PATH']}")
+        options.binary_location = os.environ['FF_BINARY_PATH']
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             usage()
             sys.exit(2)
+        elif opt == '--no-gui':
+            options.add_argument("-headless")
+        elif opt in ('-t', '--timeout'):
+            arg_timeout = int(arg)
         else:
             usage()
             sys.exit(2)
@@ -170,7 +196,8 @@ if __name__ == "__main__":
     admin_port = args[2] if len(args) > 2 else "4443"
     print("Activation tests " + tc.yellow + IP + tc.normal)
     print("---------------------------")
-    test_activation(IP, nc_port, admin_port)
+
+    test_activation(IP, nc_port, admin_port, options, webdriver_exec_path, arg_timeout)
 
 # License
 #

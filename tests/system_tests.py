@@ -11,6 +11,8 @@ Use at your own risk!
 
 More at https://ownyourbits.com
 """
+import json
+import subprocess
 
 pre_cmd = []
 
@@ -18,13 +20,17 @@ import sys
 import getopt
 import os
 import signal
-from urllib.request import urlopen
-from subprocess import run, getstatusoutput, PIPE
+from subprocess import run as sp_run, getstatusoutput, PIPE, CompletedProcess
+from typing import Optional
+
+def run(*args, **kwargs):
+    print("running command: " + " ".join(args[0]))
+    return sp_run(*args, **kwargs)
 
 processes_must_be_running = [
         'apache2',
         'cron',
-        'mysqld',
+        'mariadb',
         'php-fpm',
         'postfix',
         'redis-server',
@@ -47,7 +53,6 @@ binaries_no_docker = [
         'udiskie',
         'ufw',
         'samba',
-        'wicd-curses',
         ]
 
 files_must_exist = [
@@ -176,21 +181,106 @@ def signal_handler(sig, frame):
         sys.exit(0)
 
 
+class ProcessExecutionException(Exception):
+    pass
+
+
+def test_autoupdates():
+    def handle_error(r: CompletedProcess) -> CompletedProcess:
+        if r.returncode != 0:
+            print(f"{tc.red}error{tc.normal}\n{r.stdout.decode('utf-8') if r.stdout else ''}\n{r.stderr.decode('utf-8') if r.stderr else ''}"
+                  f" -- command failed: '{' '.join(r.args)}'")
+            raise ProcessExecutionException()
+        return CompletedProcess(r.args,
+                                r.returncode,
+                                r.stdout.decode('utf-8') if r.stdout else '',
+                                r.stderr.decode('utf-8') if r.stderr else '')
+
+    def set_cohorte_id(cohorte_id: int) -> CompletedProcess:
+        proc = subprocess.Popen(pre_cmd + ['cat', '/usr/local/etc/instance.cfg'], stdout=subprocess.PIPE, shell=False)
+        #handle_error(run(pre_cmd + ['cat', '/usr/local/etc/instance.cfg'], stdout=subprocess.STDOUT, stderr=subprocess.STDOUT))
+        #r = handle_error(run(pre_cmd + ['cat', '/usr/local/etc/instance.cfg'], stdout=PIPE, stderr=PIPE))
+        (out, err) = proc.communicate()
+        if proc.returncode != 0:
+            raise ProcessExecutionException()
+        try:
+            instance_cfg = json.loads(out)
+        except json.decoder.JSONDecodeError as e:
+            print(f"{tc.red}error{tc.normal} /usr/local/etc/instance.cfg could not be parsed, was: {out}\n{err}")
+            print(f"Command: '{' '.join(pre_cmd + ['cat', '/usr/local/etc/instance.cfg'])}'")
+            raise e
+
+        instance_cfg['cohorteId'] = cohorte_id
+        return handle_error(run(pre_cmd + ['bash', '-c', f'echo \'{json.dumps(instance_cfg)}\' > /usr/local/etc/instance.cfg'], stdout=PIPE, stderr=PIPE))
+
+    print(f"[updates] {tc.brown}staged rollouts{tc.normal}", end=' ')
+    try:
+        result = handle_error(run(pre_cmd + ['cat', '/usr/local/etc/ncp-version'], stdout=PIPE, stderr=PIPE))
+        if 'v99.99.99' in result.stdout:
+            print(f"{tc.yellow}skipped{tc.normal} (already updated to v99.99.99)")
+            return True
+        handle_error(run(pre_cmd + ['rm', '-f', '/var/run/.ncp-latest-version']))
+        handle_error(run(pre_cmd + ['sed', '-i', 's|BRANCH="master"|BRANCH="testing/staged-rollouts-1"|', '/usr/local/bin/ncp-check-version'], stdout=PIPE, stderr=PIPE))
+        set_cohorte_id(1)
+        result = run(pre_cmd + ['test', '-f', '/var/run/.ncp-latest-version'], stdout=PIPE, stderr=PIPE)
+        if result.returncode == 0:
+            result = handle_error(run(pre_cmd + ['cat', '/var/run/.ncp-latest-version'], stdout=PIPE, stderr=PIPE))
+            if 'v99.99.99' in result.stdout:
+                print(f"{tc.red}error{tc.normal} Auto update to v99.99.99 was unexpectedly not prevented by disabled cohorte id")
+                return False
+
+        set_cohorte_id(99)
+        chk_version = handle_error(run(pre_cmd + ['/usr/local/bin/ncp-check-version'], stdout=PIPE, stderr=PIPE))
+        try:
+            result = handle_error(run(pre_cmd + ['cat', '/var/run/.ncp-latest-version'], stdout=PIPE, stderr=PIPE))
+        except ProcessExecutionException as e:
+            print("stderr:", chk_version.stderr)
+            print("stdout:", chk_version.stdout)
+            raise e
+        if 'v99.99.99' not in result.stdout:
+            print(f"{tc.red}error{tc.normal} Expected latest detected version to be v99.99.99, was {result.stdout}")
+            return False
+
+        handle_error(run(pre_cmd + ['/usr/local/bin/ncp-test-updates']))
+        handle_error(run(pre_cmd + ['ncp-update', 'testing/staged-rollouts-1'], stdout=PIPE, stderr=PIPE))
+        result = handle_error(run(pre_cmd + ['cat', '/usr/local/etc/v99.99.99.success'], stdout=PIPE, stderr=PIPE))
+        if 'updated' not in result.stdout:
+            print(f"{tc.red}error{tc.normal} update to v99.99.99 did not succeed")
+            return False
+        print(f"{tc.green}ok{tc.normal}")
+
+    except ProcessExecutionException:
+        return False
+
+    return True
+
 if __name__ == "__main__":
+
+    sudo_prefix = ['sudo'] if os.environ.get('USE_SUDO', 'no') == 'yes' else []
 
     signal.signal(signal.SIGINT, signal_handler)
 
     # parse options
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'h', ['help'])
+        opts, args = getopt.getopt(sys.argv[1:], 'h', ['help', 'no-ping', 'non-interactive', 'skip-update-test'])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
 
+    skip_ping = False
+    interactive = True
+    skip_update_test = False
     for opt, arg in opts:
         if opt in ('-h', '--help'):
             usage()
             sys.exit(2)
+        elif opt == '--skip-update-test':
+            print("Skipping update test")
+            skip_update_test = True
+        elif opt == '--no-ping':
+            skip_ping = True
+        elif opt == '--non-interactive':
+            interactive = False
         else:
             usage()
             sys.exit(2)
@@ -206,32 +296,63 @@ if __name__ == "__main__":
 
     # detect if we are running this in a NCP instance
     try:
-        dockers_running = run(['docker', 'ps', '--format', '{{.Image}}'], stdout=PIPE).stdout.decode('utf-8')
+        dockers_running = run(sudo_prefix + ['docker', 'ps', '--format', '{{.Names}}'], stdout=PIPE).stdout.decode('utf-8')
     except:
         dockers_running = ''
 
-    # detect if we are running this in a LXC instance
+    lxc_command = sudo_prefix + ['lxc'] if os.environ.get('USE_INCUS', 'no') != 'yes' else ['incus']
+
     try:
-        lxc_running = run(['lxc', 'info', 'ncp'], stdout=PIPE, check = True)
+        lxc_test = run(lxc_command + ['info'], stdout=PIPE, check=True)
+        if lxc_test.returncode != 0:
+            raise Exception(f"failed to execute {lxc_command} info")
     except:
-        lxc_running = False
+        if os.environ.get('USE_SUDO', 'no') == 'yes':
+            lxc_command = None
+            lxc_running = False
+        else:
+            try:
+                lxc_test = run(['sudo'] + lxc_command + ['info'], stdout=PIPE, check='True')
+                lxc_command = ['sudo'] + lxc_command
+            except:
+                lxc_command = None
+                lxc_running = False
+
+    # detect if we are running this in a LXC instance
+    if lxc_command is not None:
+        try:
+            lxc_running = run(lxc_command + ['info', 'ncp'], stdout=PIPE, check = True)
+        except:
+            lxc_running = False
+
+    try:
+        systemd_container_running = run(sudo_prefix + ['machinectl', 'show', 'ncp'], stdout=PIPE, check = True)
+    except:
+        systemd_container_running = False
+
 
     # local method
     if os.path.exists('/usr/local/etc/ncp-baseimage'):
         print(tc.brown + "* local NCP instance detected" + tc.normal)
         if not is_lxc():
             binaries_must_be_installed = binaries_must_be_installed + binaries_no_docker
-        pre_cmd = []
+        pre_cmd = sudo_prefix
 
     # docker method
-    elif 'ownyourbits/nextcloudpi-' in dockers_running:
+    elif 'nextcloudpi' in dockers_running:
         print( tc.brown + "* local NCP docker instance detected" + tc.normal)
-        pre_cmd = ['docker', 'exec', '-ti', 'nextcloudpi']
+        pre_cmd = sudo_prefix + ['docker', 'exec']
+        if interactive:
+            pre_cmd.append('-ti')
+        pre_cmd.append('nextcloudpi')
 
     # LXC method
     elif lxc_running:
         print( tc.brown + "* local LXC instance detected" + tc.normal)
-        pre_cmd = ['lxc', 'exec', 'ncp', '--']
+        pre_cmd = lxc_command + ['exec', 'ncp', '--']
+
+    elif systemd_container_running:
+        pre_cmd = sudo_prefix + ['systemd-run', '--wait', '-P', '--machine=ncp']
 
     # SSH method
     else:
@@ -239,23 +360,25 @@ if __name__ == "__main__":
             print( tc.brown + "* No local NCP instance detected, trying SSH with " +
                tc.yellow + ssh_cmd + tc.normal + "...")
         binaries_must_be_installed = binaries_must_be_installed + binaries_no_docker
-        pre_cmd = ['ssh', '-o UserKnownHostsFile=/dev/null' , '-o PasswordAuthentication=no',
-                '-o StrictHostKeyChecking=no', '-o ConnectTimeout=1', ssh_cmd[4:]]
+        pre_cmd = sudo_prefix + ['ssh', '-o UserKnownHostsFile=/dev/null' , '-o PasswordAuthentication=no',
+                   '-o StrictHostKeyChecking=no', '-o ConnectTimeout=10', ssh_cmd[4:]]
 
-        at_char = ssh_cmd.index('@')
-        ip = ssh_cmd[at_char+1:]
-        ping_cmd = run(['ping', '-c1', '-w1', ip], stdout=PIPE, stderr=PIPE)
-        if ping_cmd.returncode != 0:
-            print(tc.red + "No connectivity to " + tc.yellow + ip + tc.normal)
-            sys.exit(1)
+        if not skip_ping:
+            at_char = ssh_cmd.index('@')
+            ip = ssh_cmd[at_char+1:]
+            ping_cmd = run(sudo_prefix + ['ping', '-c1', '-w10', ip], stdout=PIPE, stderr=PIPE)
+            if ping_cmd.returncode != 0:
+                print(tc.red + "No connectivity to " + tc.yellow + ip + tc.normal)
+                #sys.exit(1)
 
         ssh_test = run(pre_cmd + [':'], stdout=PIPE, stderr=PIPE)
         if ssh_test.returncode != 0:
-            ssh_copy = run(['ssh-copy-id', ssh_cmd[4:]], stderr=PIPE)
+            ssh_copy = run(sudo_prefix + ['ssh-copy-id', ssh_cmd[4:]], stderr=PIPE)
             if ssh_copy.returncode != 0:
                 print(tc.red + "SSH connection failed" + tc.normal)
                 sys.exit(1)
 
+    print(pre_cmd)
     # checks
     print("\nNextCloudPi system checks")
     print("-------------------------")
@@ -264,8 +387,9 @@ if __name__ == "__main__":
     files1_result  = check_files_exist(files_must_exist)
     files2_result  = check_files_dont_exist(files_must_not_exist)
     notify_push_result = check_notify_push()
+    update_test_result = True if skip_update_test else test_autoupdates()
 
-    if running_result and install_result and files1_result and files2_result and notify_push_result:
+    if running_result and install_result and files1_result and files2_result and notify_push_result and update_test_result:
         sys.exit(0)
     else:
         sys.exit(1)

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# NextCloudPi additions to Raspbian 
+# NextcloudPi additions to Raspbian
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -22,13 +22,17 @@ install()
 {
   # NCP-CONFIG
   apt-get update
-  $APTINSTALL git dialog whiptail jq file lsb-release
+  $APTINSTALL git dialog whiptail jq file lsb-release tmux logrotate
+
   mkdir -p "$CONFDIR" "$BINDIR"
 
-  # include option in raspi-config (only Raspbian)
+  # This has changed, pi user no longer exists by default, the user needs to create it with Raspberry Pi imager
+  # The raspi-config layout and options have also changed
+  # https://github.com/RPi-Distro/raspi-config/blob/master/raspi-config
   test -f /usr/bin/raspi-config && {
-    sed -i '/Change User Password/i"0 NextCloudPi Configuration" "Configuration of NextCloudPi" \\' /usr/bin/raspi-config
-    sed -i '/1\\ \*) do_change_pass ;;/i0\\ *) ncp-config ;;'                                       /usr/bin/raspi-config
+    # shellcheck disable=SC1003
+    sed -i '/S3 Password/i "S0 NextcloudPi Configuration" "Configuration of NextcloudPi" \\' /usr/bin/raspi-config
+    sed -i '/S3\\ \*) do_change_pass ;;/i S0\\ *) ncp-config ;;'                             /usr/bin/raspi-config
   }
 
   # add the ncc shortcut
@@ -67,69 +71,20 @@ EOF
 </Directory>
 EOF
 
-  cat > /etc/apache2/sites-available/ncp.conf <<EOF
-Listen 4443
-<VirtualHost _default_:4443>
-  DocumentRoot /var/www/ncp-web
-  SSLEngine on
-  SSLCertificateFile      /etc/ssl/certs/ssl-cert-snakeoil.pem
-  SSLCertificateKeyFile /etc/ssl/private/ssl-cert-snakeoil.key
-  <IfModule mod_headers.c>
-    Header always set Strict-Transport-Security "max-age=15768000; includeSubDomains"
-  </IfModule>
-
-  # 2 days to avoid very big backups requests to timeout
-  TimeOut 172800
-
-  <IfModule mod_authnz_external.c>
-    DefineExternalAuth pwauth pipe /usr/sbin/pwauth
-  </IfModule>
-
-</VirtualHost>
-<Directory /var/www/ncp-web/>
-
-  AuthType Basic
-  AuthName "ncp-web login"
-  AuthBasicProvider external
-  AuthExternal pwauth
-
-  SetEnvIf Request_URI "^" noauth
-  SetEnvIf Request_URI "^index\.php$" !noauth
-  SetEnvIf Request_URI "^/$" !noauth
-  SetEnvIf Request_URI "^/wizard/index.php$" !noauth
-  SetEnvIf Request_URI "^/wizard/$" !noauth
-
-  <RequireAll>
-
-   <RequireAny>
-      Require host localhost
-      Require local
-      Require ip 192.168
-      Require ip 172
-      Require ip 10
-      Require ip fe80::/10
-      Require ip fd00::/8
-   </RequireAny>
-
-   <RequireAny>
-      Require env noauth
-      Require user $WEBADMIN
-   </RequireAny>
-
-  </RequireAll>
-
-</Directory>
-EOF
+  install_template apache2/ncp.conf.sh /etc/apache2/sites-available/ncp.conf --defaults
 
   $APTINSTALL libapache2-mod-authnz-external pwauth
   a2enmod authnz_external authn_core auth_basic
-  a2dissite nextcloud
+  a2dissite 001-nextcloud
   a2ensite ncp-activation
 
   ## NCP USER FOR AUTHENTICATION
   id -u "$WEBADMIN" &>/dev/null || useradd --home-dir /nonexistent "$WEBADMIN"
   echo -e "$WEBPASSWD\n$WEBPASSWD" | passwd "$WEBADMIN"
-  chsh -s /usr/sbin/nologin "$WEBADMIN"
+  is_docker || is_lxc || {
+    chsh -s /usr/sbin/nologin "$WEBADMIN"
+    passwd -l root
+  }
 
   ## NCP LAUNCHER
   mkdir -p /home/www
@@ -170,7 +125,59 @@ grep -q '[\\&#;`|*?~<>^()[{}$&]' <<< "$*" && exit 1
 tar $pigz -tf "$file" data &>/dev/null
 EOF
   chmod 700 /home/www/ncp-backup-launcher.sh
-  echo "www-data ALL = NOPASSWD: /home/www/ncp-launcher.sh , /home/www/ncp-backup-launcher.sh, /sbin/halt, /sbin/reboot" >> /etc/sudoers
+
+  cat > /home/www/ncp-app-bridge.sh <<'EOF'
+#!/bin/bash
+set -e
+grep -q '[\\&#;`|*?~<>^()[{}$&]' <<< "$*" && exit 1
+action="${1?}"
+[[ "$action" == "config" ]] && {
+  config_type="${2?}"
+  arg="${3}"
+
+  [[ -z "$arg" ]] || {
+    key="${arg%=*}"
+    val="${arg#*=}"
+  }
+
+  if [[ "$config_type" == "ncp" ]]
+  then
+    config_path="/usr/local/etc/ncp.cfg"
+  elif [[ "$config_type" == "ncp-community" ]]
+  then
+    . /usr/local/etc/library.sh
+    [[ -z "${key}" ]] || {
+      set_app_param ncp-community.sh "${key}" "${val}"
+    }
+    get_app_params ncp-community.sh
+    exit $?
+  else
+    echo "ERROR: Invalid config name '${config_type}'" >&2
+    exit 1
+  fi
+
+  [[ -z "${key}" ]] || {
+    cfg="$(jq ".${key} = \"${val}\"" <"$config_path")"
+    echo "$cfg" > "$config_path"
+  }
+  cat "$config_path"
+  exit 0
+}
+
+[[ "$action" == "file" ]] && {
+  file="${2?}"
+  if [[ "$file" == "ncp-version" ]]
+  then
+    cat /usr/local/etc/ncp-version
+  else
+    echo "ERROR: Invalid file '${file}'" >&2
+    exit 1
+  fi
+  exit 0
+}
+EOF
+  chmod 700 /home/www/ncp-app-bridge.sh
+  echo "www-data ALL = NOPASSWD: /home/www/ncp-launcher.sh , /home/www/ncp-backup-launcher.sh, /home/www/ncp-app-bridge.sh, /sbin/halt, /sbin/reboot" >> /etc/sudoers
 
   # NCP AUTO TRUSTED DOMAIN
   mkdir -p /usr/lib/systemd/system
@@ -202,7 +209,7 @@ EOF
   chmod g+w           /var/run/.ncp-latest-version
 
   # Install all ncp-apps
-  bin/ncp-update $BRANCH || exit $?
+  ALLOW_UPDATE_SCRIPT=1 bin/ncp-update "$BRANCH" || exit $?
 
   # LIMIT LOG SIZE
   grep -q maxsize /etc/logrotate.d/apache2 || sed -i /weekly/amaxsize2M /etc/logrotate.d/apache2
@@ -238,6 +245,10 @@ EOF
 #!/bin/bash
 /usr/local/bin/ncp-check-updates
 EOF
+
+    echo '
+NCP is not activated yet. Please enter https://nextcloudpi.local or this instance'"'"'s local IP address in your webbrowser to complete activation. You can find detailed instructions at https://nextcloudpi.com/activate
+' >> /etc/issue
     chmod a+x /etc/update-motd.d/*
 
     ## HOSTNAME AND mDNS
@@ -251,7 +262,7 @@ EOF
     ## tag image
     is_docker && local DOCKER_TAG="_docker"
     is_lxc && local DOCKER_TAG="_lxc"
-    echo "NextCloudPi${DOCKER_TAG}_$( date  "+%m-%d-%y" )" > /usr/local/etc/ncp-baseimage
+    echo "NextcloudPi${DOCKER_TAG}_$( date  "+%m-%d-%y" )" > /usr/local/etc/ncp-baseimage
 
     ## SSH hardening
     if [[ -f /etc/ssh/sshd_config ]]; then

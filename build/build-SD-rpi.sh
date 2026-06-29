@@ -8,15 +8,15 @@
 # Usage: ./batch.sh <DHCP QEMU image IP>
 #
 
-set -e
+set -e"$DBG"
 source build/buildlib.sh
 
 echo -e "\e[1m\n[ Build NCP Raspberry Pi ]\e[0m"
 
-URL="https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-2021-11-08/2021-10-30-raspios-bullseye-arm64-lite.zip"
+URL="https://downloads.raspberrypi.org/raspios_lite_arm64/images/raspios_lite_arm64-2022-09-26/2022-09-22-raspios-bullseye-arm64-lite.img.xz"
 SIZE=4G                     # Raspbian image size
 #CLEAN=0                    # Pass this envvar to skip cleaning download cache
-IMG="NextCloudPi_RPi_$( date  "+%m-%d-%y" ).img"
+IMG="${IMG:-NextcloudPi_RPi_$( date  "+%m-%d-%y" ).img}"
 TAR=output/"$( basename "$IMG" .img ).tar.bz2"
 
 ##############################################################################
@@ -47,7 +47,7 @@ rsync -Aax --exclude-from .gitignore --exclude *.img --exclude *.bz2 . raspbian_
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   sudo chroot raspbian_root /bin/bash <<'EOFCHROOT'
-    set -e
+    set -ex
 
     # allow oldstable
     apt-get update --allow-releaseinfo-change
@@ -61,8 +61,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     #$APTINSTALL rpi-update
     #echo -e "y\n" | PRUNE_MODULES=1 rpi-update
 
+    # this image comes without resolv.conf ??
+    echo 'nameserver 1.1.1.1' >> /etc/resolv.conf
+
     # install NCP
     cd /tmp/ncp-build || exit 1
+    systemctl daemon-reload
     CODE_DIR="$(pwd)" bash install.sh
 
     # work around dhcpcd Raspbian bug
@@ -75,23 +79,21 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     # harden SSH further for Raspbian
     sed -i 's|^#PermitRootLogin .*|PermitRootLogin no|' /etc/ssh/sshd_config
 
-    # default user 'pi' for SSH
-    cfg="$(jq '.' etc/ncp-config.d/SSH.cfg)"
-    cfg="$(jq '.params[1].value = "pi"'        <<<"$cfg")"
-    cfg="$(jq '.params[2].value = "raspberry"' <<<"$cfg")"
-    cfg="$(jq '.params[3].value = "raspberry"' <<<"$cfg")"
-    echo "$cfg" > /usr/local/etc/ncp-config.d/SSH.cfg
-
-    $ cleanup
+    # cleanup
     source etc/library.sh && run_app_unsafe post-inst.sh
+    rm /etc/resolv.conf
     rm -rf /tmp/ncp-build
 EOFCHROOT
+
+basename "$IMG" | sudo tee raspbian_root/usr/local/etc/ncp-baseimage
 
 trap '' EXIT
 clean_chroot_raspbian
 
 ## pack
-pack_image "$IMG" "$TAR"
+[[ "$*" =~ .*" --pack ".* ]] && pack_image "$IMG" "$TAR"
+
+exit 0
 
 ## test
 
@@ -99,7 +101,7 @@ pack_image "$IMG" "$TAR"
 #test_image    "$IMG" "$IP" # TODO fix tests
 
 # upload
-create_torrent "$TAR"
+#create_torrent "$TAR"
 #upload_ftp "$( basename "$TAR" .tar.bz2 )"
 
 

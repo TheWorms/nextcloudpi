@@ -14,7 +14,7 @@ source build/buildlib.sh
 echo -e "\e[1m\n[ Build NCP LXC ]\e[0m"
 
 #CLEAN=0                    # Pass this envvar to skip cleaning download cache
-IMG="NextCloudPi_LXC_$( date  "+%m-%d-%y" ).img"
+IMG="NextcloudPi_LXC_$( date  "+%m-%d-%y" ).img"
 IMG=tmp/"$IMG"
 
 TAR=output/"$( basename "$IMG" .img ).tar.bz2"
@@ -33,12 +33,13 @@ prepare_dirs                   # tmp cache output
 
 # TODO sudo
 sudo lxc-destroy ncp -f
-sudo lxc-create -n ncp -t download -B btrfs -- --dist debian --release buster --arch amd64 # TODO vars for distro and stuff 
+sudo lxc-create -n ncp -t download -B btrfs -- --dist debian --release buster --arch amd64 # TODO vars for distro and stuff
 sudo cp lxc_config /var/lib/lxc/ncp/config
 sudo lxc-start -n ncp
 sudo lxc-attach -n ncp --clear-env -- bash -c 'while [ "$(systemctl is-system-running 2>/dev/null)" != "running" ] && [ "$(systemctl is-system-running 2>/dev/null)" != "degraded" ]; do :; done'
 sudo lxc-attach -n ncp --clear-env -- CODE_DIR="$(pwd)" bash /build/install.sh
 sudo lxc-attach -n ncp --clear-env -- bash -c 'source /build/etc/library.sh; run_app_unsafe /build/post-inst.sh'
+sudo lxc-attach -n ncp --clear-env -- bash -c "echo '$(basename "$IMG")' > /usr/local/etc/ncp-baseimage"
 sudo lxc-attach -n ncp --clear-env -- poweroff
 
 exit 0 # TODO

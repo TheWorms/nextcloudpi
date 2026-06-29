@@ -1,10 +1,11 @@
 #! /bin/bash
 
 set -e
+set +u
 source /usr/local/etc/library.sh
 
 [[ "$1" != "--defaults" ]] || echo "INFO: Restoring template to default settings" >&2
-[[ ! -f /.docker-image ]]  || echo "INFO: Docker installation detected" >&2
+is_docker && echo "INFO: Docker installation detected" >&2
 
 if [[ "$1" != "--defaults" ]]; then
   LETSENCRYPT_DOMAIN="$(
@@ -26,6 +27,17 @@ if ! [[ -f /.ncp-image ]] && [[ "$1" != "--defaults" ]] && [[ -f "${BINDIR}/SYST
   )"
 else
   METRICS_IS_ENABLED=no
+fi
+
+if ! [[ -f /.ncp-image ]] && [[ "$1" != "--defaults" ]] && [[ -f "${BINDIR}/NETWORKING/nc-trusted-proxies.sh" ]]; then
+  TRUSTED_PROXIES=()
+  while read -r proxy
+  do
+    TRUSTED_PROXIES+=("$proxy")
+  done < <(
+  source "${BINDIR}/NETWORKING/nc-trusted-proxies.sh"
+  tmpl_trusted_proxies_list
+  )
 fi
 
 echo "INFO: Metrics enabled: ${METRICS_IS_ENABLED}" >&2
@@ -53,7 +65,7 @@ if [[ "$1" != "--defaults" ]] && [[ -n "$LETSENCRYPT_DOMAIN" ]]; then
   # otherwise, in some installs this is the path we use
   [[ -f "${LETSENCRYPT_CERT_BASE_PATH}/fullchain.pem" ]] || {
     if [[ -d "/etc/letsencrypt/live/ncp-nextcloud" ]]; then
-      LETSENCRYPT_CERT_BASE_PATH="/etc/letsencrypt/live/ncp-nextcloud" 
+      LETSENCRYPT_CERT_BASE_PATH="/etc/letsencrypt/live/ncp-nextcloud"
     fi
   }
 else
@@ -80,20 +92,29 @@ cat <<EOF
     ProxyPass /push/ws ws://127.0.0.1:7867/ws
     ProxyPass /push/ http://127.0.0.1:7867/
     ProxyPassReverse /push/ http://127.0.0.1:7867/
+
+    RemoteIPHeader X-Forwarded-For
 EOF
+
+if [[ "$1" != "--defaults" ]] && [[ "${#TRUSTED_PROXIES[@]}" != 0 ]]
+then
+  for proxy in "${TRUSTED_PROXIES[@]}"
+  do
+    echo "RemoteIPTrustedProxy $proxy"
+  done
+fi
 
 if [[ "$1" != "--defaults" ]] && [[ "$METRICS_IS_ENABLED" == yes ]]
 then
 
   cat <<EOF
-
     <Location /metrics/system>
       ProxyPass http://localhost:9100/metrics
 
       Order deny,allow
       Allow from all
       AuthType Basic
-      AuthName "Metrics"
+      AuthName "System Metrics"
       AuthUserFile /usr/local/etc/metrics.htpasswd
       <RequireAll>
         <RequireAny>
@@ -101,7 +122,22 @@ then
           Require valid-user
         </RequireAny>
       </RequireAll>
+    </Location>
 
+    <Location /metrics/ncp>
+      ProxyPass http://localhost:9000/metrics
+
+      Order deny,allow
+      Allow from all
+      AuthType Basic
+      AuthName "NCP Metrics"
+      AuthUserFile /usr/local/etc/metrics.htpasswd
+      <RequireAll>
+        <RequireAny>
+          Require host localhost
+          Require valid-user
+        </RequireAny>
+      </RequireAll>
     </Location>
 EOF
 fi
@@ -125,6 +161,6 @@ cat <<EOF
 EOF
 
 if ! [[ -f /.ncp-image ]]; then
-  echo "Apache self check:" >> /var/log/ncp.log
-  apache2ctl -t >> /var/log/ncp.log 2>&1
+  echo "Apache self check:" >&2
+  apache2ctl -t 1>&2
 fi

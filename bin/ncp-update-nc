@@ -17,219 +17,57 @@
 # - failure at each test point
 # -> must pass basic NC in tests.py ( meaning it's not in a broken state )
 
-set -eE
+set -eE${DBG}
 
-VER="$1"
 BIN="${0##*/}"
-
-source /usr/local/etc/library.sh
-
-# pre-checks
-####################
+VER="$1"
 [[ "$VER" == "" ]] && { echo "Usage ${BIN} <version>"; exit 1; }
-[[ -f /.docker-image ]] && BASEDIR=/data || BASEDIR=/var/www
-cd "$BASEDIR"
-DATADIR="$( grep datadirectory nextcloud/config/config.php | awk '{ print $3 }' | grep -oP "[^']*[^']" | head -1 )"
-ncc status &>/dev/null          || { echo "Nextcloud is currently down"; exit 1; }
-[[ -d /var/www/nextcloud-old ]] && { echo "Nextcloud backup directory found. Interrupted or already running installation?"; exit 1; }
-[[ -d /var/www/nextcloud     ]] || { echo "Nextcloud directory not found"      ; exit 1; }
-[[ -d "$DATADIR"             ]] || { echo "Nextcloud data directory not found" ; exit 1; }
+extra_args=()
+if [[ " $* " =~ " "--allow-incompatible-apps" " ]]
+then
+  extra_args+=(--allow-incompatible-apps)
+fi
 
-# check version
-####################
+connect_to_nc_update() {
+  tail -n 100 -f "/var/log/ncp-update-nc.log" &
+  tail_pid=$!
+  trap "kill '$tail_pid'" EXIT
+  while [[ "$(systemctl is-active ncp-update-nc ||:)" =~ ^(active|activating|deactivating)$ ]]
+  do
+    sleep 3
+  done
 
-[[ ${EUID} -eq 0 ]] && SUDO="sudo -u www-data"
-CURRENT="$( $SUDO php /var/www/nextcloud/occ status | grep "version:" | awk '{ print $3 }' )"
+  if [[ "$(systemctl is-active ncp-update-nc ||:)" == "inactive" ]]
+  then
+    echo "Nextcloud update finished successfully."
+    return 0
+  elif [[ "$(systemctl is-active ncp-update-nc ||:)" == "failed" ]]
+  then
+    echo "Nextcloud update failed (or was installed already)."
+    return 1
+  else
+    echo "Nextcloud update was not found or failed (unexpected status: '$(systemctl is-active ncp-update-nc ||:)')"
+  fi
+}
 
-MAJOR_CUR=$( cut -d. -f1 <<<"${CURRENT}" )
-MAJOR_NEW=$( cut -d. -f1 <<<"${VER}" )
-if [[ $((MAJOR_NEW - MAJOR_CUR)) -gt 1 ]]; then
-  echo "Upgrade cannot skip major versions. Please upgrade one major version at a time" >&2
+if [[ "$(systemctl is-active ncp-update-nc ||:)" =~ ^(active|activating|deactivating)$ ]]
+then
+  echo "Existing ncp-update-nc process detected. Connecting..."
+  connect_to_nc_update
+  exit $?
+fi
+
+systemctl reset-failed ncp-update-nc 2>/dev/null ||:
+systemd-run -u 'ncp-update-nc' --service-type=oneshot --no-block -p TimeoutStartSec="24h" -p TimeoutStopSec="1h" \
+  bash -c "set -o pipefail; DBG='${DBG:-}' /usr/local/bin/ncp-update-nc.d/update-nc.sh '${VER}' ${extra_args[*]} |& tee /var/log/ncp-update-nc.log"
+sleep 1
+
+if ! [[ "$(systemctl is-active ncp-update-nc ||:)" =~ ^(active|inactive|activating|deactivating)$ ]]
+then
+  echo "Failed to start ncp-update-nc"
+  [[ -f /var/log/ncp-update-nc.log ]] && cat /var/log/ncp-update-nc.log
+  systemctl status --no-pager ncp-update-nc ||:
   exit 1
 fi
 
-grep -qP "\d+\.\d+\.\d+" <<<"$CURRENT" || { echo "Malformed version $CURRENT"; exit 1; }
-grep -qP "\d+\.\d+\.\d+" <<<"$VER"     || { echo "Malformed version $VER"    ; exit 1; }
-
-echo "Current   Nextcloud version $CURRENT"
-echo "Available Nextcloud version $VER"
-is_more_recent_than "${VER}" "${CURRENT}" || { echo "Nothing to update"; exit 1; } # we want `exit 1` so the autoupdate doesn't notify success in this case
-
-# make sure that cron.php is not running and there are no pending jobs
-# https://github.com/nextcloud/server/issues/10949
-pgrep -cf cron.php &>/dev/null && { pkill -f cron.php; sleep 3; }
-pgrep -cf cron.php &>/dev/null && { echo "cron.php running. Abort"; exit 1; }
-mysql nextcloud <<<"UPDATE oc_jobs SET reserved_at=0;"
-
-# cleanup
-####################
-cleanup() {
-  local RET=$?
-  set +eE
-  echo "Clean up..."
-  rm -rf "$BASEDIR"/nextcloud.tar.bz2 "$BASEDIR"/nextcloud-old
-  trap "" EXIT
-  exit $RET
-}
-trap cleanup EXIT
-
-# get new code
-####################
-URL="https://download.nextcloud.com/server/releases/nextcloud-$VER.tar.bz2"
-echo "Download Nextcloud $VER..."
-wget -q "$URL" -O nextcloud.tar.bz2 || { echo "Error downloading"; exit 1; }
-
-# backup
-####################
-BKPDIR=/var/www/
-WITH_DATA=no
-COMPRESSED=yes
-LIMIT=0
-
-echo "Back up current instance..."
-set +eE
-ncp-backup "$BKPDIR" "$WITH_DATA" "$COMPRESSED" "$LIMIT" # && false # test point
-RET=$?
-sync
-set -eE
-
-BKP_="$( ls -1t "$BKPDIR"/nextcloud-bkp_*.tar.gz 2>/dev/null | head -1 )"
-[[ -f "$BKP_"  ]] || {                set +eE; echo "Error backing up"; false || cleanup; }
-[[ $RET -ne 0  ]] && { rm -f "$BKP_"; set +eE; echo "Error backing up"; false || cleanup; }
-BKP="$( dirname "$BKP_" )/$( basename "$BKP_" .tar.gz )-${CURRENT}.tar.gz"
-mv "$BKP_" "$BKP"
-
-# simple restore if anything fails from here
-####################
-rollback_simple() {
-  set +eE
-  trap "" INT TERM HUP ERR
-  echo -e "Abort\nSimple roll back..."
-  rm -rf "$BASEDIR"/nextcloud
-  mv "$BASEDIR"/nextcloud-old "$BASEDIR"/nextcloud
-  false || cleanup                 # so cleanup exits with 1
-}
-trap rollback_simple INT TERM HUP ERR
-
-# replace code
-####################
-echo "Install Nextcloud $VER..."
-mv -T nextcloud nextcloud-old
-tar -xf nextcloud.tar.bz2             # && false # test point
-rm -rf /var/www/nextcloud.tar.bz2
-
-# copy old config
-####################
-cp nextcloud-old/config/config.php nextcloud/config/
-
-# copy old themes
-####################
-cp -raT nextcloud-old/themes/ nextcloud/themes/
-
-# copy old NCP apps
-####################
-for app in nextcloudpi previewgenerator; do
-  if [[ -d nextcloud-old/apps/"${app}" ]]; then
-    cp -r -L nextcloud-old/apps/"${app}" /var/www/nextcloud/apps/
-  fi
-done
-
-#false # test point
-
-# copy data if it was at the default location
-####################
-if [[ "$DATADIR" == "/var/www/nextcloud/data" ]] || [[ "$DATADIR" == "/data/nextcloud/data" ]]; then
-  echo "Restore data..."
-  mv -T nextcloud-old/data nextcloud/data
-fi
-
-# nc-restore if anything fails from here
-####################
-rollback() {
-  set +eE
-  trap "" INT TERM HUP ERR EXIT
-  echo -e "Abort\nClean up..."
-  rm -rf /var/www/nextcloud.tar.bz2 "$BASEDIR"/nextcloud-old
-  echo "Rolling back to backup $BKP..."
-  local TMPDATA
-  TMPDATA="$( mktemp -d "/var/www/ncp-data.XXXXXX" )" || { echo "Failed to create temp dir" >&2; exit 1; }
-  [[ "$DATADIR" == "$BASEDIR/nextcloud/data" ]] && mv -T "$DATADIR" "$TMPDATA"
-  ncp-restore "$BKP" || { echo "Rollback failed! Data left at $TMPDATA"; exit 1; }
-  [[ "$DATADIR" == "$BASEDIR/nextcloud/data" ]] && { rm -rf "$DATADIR"; mv -T "$TMPDATA" "$DATADIR"; }
-  rm "$BKP"
-  echo "Rollback successful. Nothing was updated"
-  exit 1
-}
-trap rollback INT TERM HUP ERR
-
-# fix permissions
-####################
-echo "Fix permissions..."
-chown -R www-data:www-data nextcloud
-find nextcloud/ -type d -exec chmod 750 {} \;
-find nextcloud/ -type f -exec chmod 640 {} \;
-
-# upgrade
-####################
-echo "Upgrade..."
-ncc='sudo -u www-data php nextcloud/occ'
-$ncc upgrade      # && false # test point
-$ncc | grep -q db:add-missing-indices && $ncc db:add-missing-indices -n
-$ncc | grep -q db:add-missing-columns && $ncc db:add-missing-columns -n
-$ncc | grep -q db:add-missing-primary-keys && $ncc db:add-missing-primary-keys -n
-$ncc | grep -q db:convert-filecache-bigint && $ncc db:convert-filecache-bigint -n
-
-
-# use the correct version for custom apps
-NCVER="$(ncc status | grep "version:" | awk '{ print $3 }')"
-if is_more_recent_than "21.0.0" "${NCVER}"; then
-  NCPREV=/var/www/ncp-previewgenerator/ncp-previewgenerator-nc20
-else
-  # Install notify_push if not installed
-  if ! is_app_enabled notify_push; then
-    ncc app:install notify_push
-    ncc app:enable  notify_push
-    bash /usr/local/etc/ncp-templates/nextcloud.conf.sh > /etc/apache2/sites-available/nextcloud.conf
-    a2enmod proxy proxy_http proxy_wstunnel
-    apachectl -k graceful
-    ## make sure the notify_push daemon is runnnig
-
-    arch="$(uname -m)"
-    [[ "${arch}" =~ "armv7" ]] && arch="armv7"
-    cat > /etc/systemd/system/notify_push.service <<EOF
-[Unit]
-Description = Push daemon for Nextcloud clients
-After = mysql.service
-
-[Service]
-Environment = PORT=7867
-ExecStart = /var/www/nextcloud/apps/notify_push/bin/"${arch}"/notify_push --allow-self-signed /var/www/nextcloud/config/config.php
-User=www-data
-
-[Install]
-WantedBy = multi-user.target
-EOF
-    start_notify_push
-    nc_domain="$(ncc config:system:get overwrite.cli.url)"
-    set-nc-domain "${nc_domain}" || {
-      echo "notify_push setup failed. You are probably behind a proxy"
-      echo "Run 'ncc config:system:set trusted_proxies 15 --value=<proxy_IP>' and then 'ncc notify_push:setup https://<domain>/push to enable"
-      echo "Check https://help.nextcloud.com/tags/ncp for support"
-    }
-
-  fi
-  NCPREV=/var/www/ncp-previewgenerator/ncp-previewgenerator-nc21
-fi
-rm -rf /var/www/nextcloud/apps/previewgenerator
-ln -snf "${NCPREV}" /var/www/nextcloud/apps/previewgenerator
-
-# refresh completions
-ncc _completion -g --shell-type bash -p ncc | sed 's|/var/www/nextcloud/occ|ncc|g' > /usr/share/bash-completion/completions/ncp
-
-# done
-####################
-mkdir -p  "$DATADIR"/ncp-update-backups
-mv "$BKP" "$DATADIR"/ncp-update-backups
-chown -R www-data:www-data "$DATADIR"/ncp-update-backups
-BKP="$DATADIR"/ncp-update-backups/"$( basename "$BKP" )"
-echo "Backup stored at $BKP"
+connect_to_nc_update

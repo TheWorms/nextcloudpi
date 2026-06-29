@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Unattended upgrades installation on NextCloudPi
+# Unattended upgrades installation on NextcloudPi
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -12,14 +12,12 @@
 install()
 {
   apt-get update
-  apt install -y --no-install-recommends unattended-upgrades
+  apt-get install -y --no-install-recommends unattended-upgrades
   rm -f /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/02-armbian-periodic
 }
 
 configure()
 {
-  source /usr/local/etc/library.sh # sets RELEASE
-
   [[ $ACTIVE     == "yes" ]] && local AUTOUPGRADE=1   || local AUTOUPGRADE=0
   [[ $AUTOREBOOT == "yes" ]] && local AUTOREBOOT=true || local AUTOREBOOT=false
 

@@ -31,7 +31,7 @@ function launch_install_qemu()
   sleep 10
   wait_SSH "$IP"
   launch_installation_qemu "$IP" || return 1 # uses $INSTALLATION_CODE
-  wait 
+  wait
   echo "$IMGOUT generated successfully"
 }
 
@@ -59,9 +59,9 @@ function ssh_pi()
                       -o LogLevel=quiet                  )
   type sshpass &>/dev/null && local SSHPASS=( sshpass -p$PIPASS )
   if [[ "${SSHPASS[@]}" == "" ]]; then
-    ${SSH[@]} ${PIUSER}@$IP $ARGS; 
+    ${SSH[@]} ${PIUSER}@$IP $ARGS;
   else
-    ${SSHPASS[@]} ${SSH[@]} ${PIUSER}@$IP $ARGS 
+    ${SSHPASS[@]} ${SSH[@]} ${PIUSER}@$IP $ARGS
     local RET=$?
     [[ $RET -eq 5 ]] && { ${SSH[@]} ${PIUSER}@$IP $ARGS; return $?; }
     return $RET
@@ -173,7 +173,14 @@ function prepare_chroot_raspbian()
   sudo mount -o bind /dev     raspbian_root/dev/
   sudo mount -o bind /dev/pts raspbian_root/dev/pts
 
-  sudo cp /usr/bin/qemu-aarch64-static raspbian_root/usr/bin
+  if [[ -f "qemu-aarch64-static" ]]
+  then
+    sudo cp qemu-aarch64-static raspbian_root/usr/bin/
+    #sudo cp qemu-arm-static raspbian_root/usr/bin/
+  else
+    sudo cp /usr/bin/qemu-aarch64-static raspbian_root/usr/bin
+    #sudo cp /usr/bin/qemu-arm-static raspbian_root/usr/bin
+  fi
 
   # Prevent services from auto-starting
   sudo bash -c "echo -e '#!/bin/sh\nexit 101' > raspbian_root/usr/sbin/policy-rc.d"
@@ -274,7 +281,7 @@ function download_raspbian()
   local URL=$1
   local IMGFILE=$2
   local IMG_CACHE=cache/raspios_lite.img
-  local ZIP_CACHE=cache/raspios_lite.zip
+  local ZIP_CACHE=cache/raspios_lite.xz
 
   echo -e "\n\e[1m[ Download RaspiOS ]\e[0m"
   mkdir -p cache
@@ -286,12 +293,11 @@ function download_raspbian()
   test -f "$ZIP_CACHE" && {
     echo -e "INFO: $ZIP_CACHE already exists. Skipping download ..."
   } || {
-    wget "$URL" -O "$ZIP_CACHE" || return 1
+    wget "$URL" -nv -O "$ZIP_CACHE" || return 1
   }
 
-  unzip -o "$ZIP_CACHE" && \
-    mv *-raspios-*.img $IMG_CACHE && \
-    cp -v --reflink=auto $IMG_CACHE "$IMGFILE" 
+  unxz -k -c "$ZIP_CACHE" > "$IMG_CACHE" && \
+    cp -v --reflink=auto $IMG_CACHE "$IMGFILE"
 }
 
 function pack_image()
@@ -302,7 +308,7 @@ function pack_image()
   local IMGNAME="$( basename "$IMG" )"
   echo -e "\n\e[1m[ Pack Image ]\e[0m"
   echo "packing $IMG → $TAR"
-  tar -I pbzip2 -C "$DIR" -cvf "$TAR" "$IMGNAME" && \
+  tar -C "$DIR" -cavf "$TAR" "$IMGNAME" && \
     echo -e "$TAR packed successfully"
 }
 
@@ -329,43 +335,6 @@ function generate_changelog()
     sed 's|* \[tag: |\n[|' > changelog.md
 }
 
-function upload_ftp()
-{
-  local IMGNAME="$1"
-  echo -e "\n\e[1m[ Upload FTP ]\e[0m"
-  echo "* $IMGNAME..."
-  [[ -f torrent/"$IMGNAME"/"$IMGNAME".tar.bz2 ]] || { echo "No image file found, abort"; return 1; }
-  [[ "$FTPPASS" == "" ]] && { echo "No FTPPASS variable found, skip upload"; return 0; }
-
-  cd torrent
-
-  ftp -np ftp.ownyourbits.com <<EOF
-user root@ownyourbits.com $FTPPASS
-mkdir testing
-mkdir testing/$IMGNAME
-cd testing/$IMGNAME
-binary
-rm  $IMGNAME.torrent
-put $IMGNAME.torrent
-bye
-EOF
-  cd -
-  cd torrent/$IMGNAME
-
-  ftp -np ftp.ownyourbits.com <<EOF
-user root@ownyourbits.com $FTPPASS
-cd testing/$IMGNAME
-binary
-rm  $IMGNAME.tar.bz2
-put $IMGNAME.tar.bz2
-rm  md5sum
-put md5sum
-bye
-EOF
-  ret=$?
-  cd -
-  return $ret
-}
 
 upload_images()
 {

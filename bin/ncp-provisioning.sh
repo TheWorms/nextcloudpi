@@ -3,7 +3,7 @@
 # this script runs at startup to provide an unique random passwords for each instance
 
 source /usr/local/etc/library.sh
-
+set -x
 ## redis provisioning
 
 CFG=/var/www/nextcloud/config/config.php
@@ -67,9 +67,28 @@ BKP="$( ls -1t /var/www/nextcloud-bkp_*.tar.gz 2>/dev/null | head -1 )"
 ## Check for encrypted data and ask for password
 if needs_decrypt; then
   echo "Detected encrypted instance"
-  a2dissite ncp nextcloud
+  a2dissite ncp 001-nextcloud
   a2ensite ncp-activation
   apache2ctl -k graceful
 fi
+
+[[ -f /usr/local/etc/instance.cfg ]] || {
+  cohorte_id=$((RANDOM % 100))
+  cat > /usr/local/etc/instance.cfg <<EOF
+{
+  "cohorteId": ${cohorte_id}
+}
+EOF
+  cat /usr/local/etc/instance.cfg
+}
+
+systemctl is-enabled -q nextcloud-ai-worker@1.service || {
+  max="$(nproc || echo '2')"
+  max="$((max-1))"
+  for i in $(seq 1 "$max")
+  do
+    systemctl enable --now "nextcloud-ai-worker@${i}.service"
+  done
+}
 
 exit 0

@@ -14,8 +14,8 @@ BRANCH="${BRANCH:-master}"
 
 set -e$DBG
 
-TMPDIR="$(mktemp -d /tmp/nextcloudpi.XXXXXX || (echo "Failed to create temp dir. Exiting" >&2 ; exit 1) )"
-trap "rm -rf \"${TMPDIR}\"" 0 1 2 3 15
+TEMPDIR="$(mktemp -d /tmp/nextcloudpi.XXXXXX || (echo "Failed to create temp dir. Exiting" >&2 ; exit 1) )"
+trap "rm -rf \"${TEMPDIR}\"" 0 1 2 3 15
 
 [[ ${EUID} -ne 0 ]] && {
   printf "Must be run as root. Try 'sudo $0'\n"
@@ -28,17 +28,30 @@ export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 type mysqld &>/dev/null && echo ">>> WARNING: existing mysqld configuration will be changed <<<"
 type mysqld &>/dev/null && mysql -e 'use nextcloud' &>/dev/null && { echo "The 'nextcloud' database already exists. Aborting"; exit 1; }
 
+[[ "$CI" == "true" ]] || {
+  echo "WARNING: This installer will disable SSH login for the root user and reset its password.
+If you need to login with root, you should make sure, you have a root session open that you can use,
+to revert these changes afterwards (set PermitRootLogin to 'yes' in /etc/ssh/sshd_config and run passwd as root)."
+  for i in {1..10}
+  do
+    echo "Continuing in $((30-(3*i)))s (press Ctrl+C to abort)..."
+    sleep 3
+  done
+}
+
 # get dependencies
 apt-get update
-apt-get install --no-install-recommends -y git ca-certificates sudo lsb-release
+DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y git ca-certificates sudo lsb-release wget jq gnupg2
 
 # get install code
 if [[ "${CODE_DIR}" == "" ]]; then
   echo "Getting build code..."
-  CODE_DIR="${TMPDIR}"/nextcloudpi
-  git clone -b "${BRANCH}" https://github.com/nextcloud/nextcloudpi.git "${CODE_DIR}"
+  CODE_DIR_TMP="${TEMPDIR}"/nextcloudpi
+  git clone -b "${BRANCH}" https://github.com/nextcloud/nextcloudpi.git "${CODE_DIR_TMP}"
+  cd "$CODE_DIR_TMP"
+else
+  cd "${CODE_DIR}"
 fi
-cd "${CODE_DIR}"
 
 # install NCP
 echo -e "\nInstalling NextCloudPi..."
@@ -67,13 +80,23 @@ rm /usr/local/etc/ncp-config.d/nc-nextcloud.cfg    # armbian overlay is ro
 systemctl restart mysqld # TODO this shouldn't be necessary, but somehow it's needed in Debian 9.6. Fixme
 install_app    ncp.sh
 run_app_unsafe bin/ncp/CONFIG/nc-init.sh
+echo 'Moving data directory to a more sensible location'
+df -h
+mkdir -p /opt/ncdata
+[[ -f "/usr/local/etc/ncp-config.d/nc-datadir.cfg" ]] || {
+  should_rm_datadir_cfg=true
+  cp etc/ncp-config.d/nc-datadir.cfg /usr/local/etc/ncp-config.d/nc-datadir.cfg
+}
+DISABLE_FS_CHECK=1 NCPCFG="/usr/local/etc/ncp.cfg" run_app_unsafe bin/ncp/CONFIG/nc-datadir.sh
+[[ -z "$should_rm_datadir_cfg" ]] || rm /usr/local/etc/ncp-config.d/nc-datadir.cfg
 rm /.ncp-image
+rm -f /opt/ncdata/data/nextcloud.log
 
 # skip on Armbian / Vagrant / LXD ...
 [[ "${CODE_DIR}" != "" ]] || bash /usr/local/bin/ncp-provisioning.sh
 
 cd -
-rm -rf "${TMPDIR}"
+rm -rf "${TEMPDIR}"
 
 IP="$(get_ip)"
 

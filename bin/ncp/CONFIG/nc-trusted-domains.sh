@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Manually add trusted domains in NextCloudPi
+# Manually add trusted domains in NextcloudPi
 #
 # Copyleft 2019 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -13,6 +13,7 @@ configure()
   [[ "$DOMAIN1" != "" ]] && ncc config:system:set trusted_domains 20 --value="$DOMAIN1"
   [[ "$DOMAIN2" != "" ]] && ncc config:system:set trusted_domains 21 --value="$DOMAIN2"
   [[ "$DOMAIN3" != "" ]] && ncc config:system:set trusted_domains 22 --value="$DOMAIN3"
+  return 0
 }
 
 install(){ :; }

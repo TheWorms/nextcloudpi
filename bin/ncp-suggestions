@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# NextCloudPi configuration suggestions
+# NextcloudPi configuration suggestions
 #
 # Copyleft 2018 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -23,10 +23,10 @@ is_active_app dnsmasq && \
   grep -q "NAT loopback|no" <<<"$OUT" && \
     echo -e "\nYou should enable dnsmasq to use your domain inside home"
 
-grep -q "certificates|none" <<<"$OUT" && \
+grep -q "Certificates|none" <<<"$OUT" && \
   echo -e "\nYou should run Lets Encrypt for trusted encrypted access"
 
-grep -q "port check .*|closed" <<<"$OUT" && \
+grep -q "Port .*|closed" <<<"$OUT" && \
     echo -e "\nYou should open your ports for Lets Encrypt and external access"
 
 grep -q "USB devices|none" <<<"$OUT" || {

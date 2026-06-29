@@ -1,17 +1,29 @@
 #!/bin/bash
 
-# Manually add trusted proxies in NextCloudPi
+# Manually add trusted proxies in NextcloudPi
 #
 # Copyleft 2019 by Pascal Haefliger <45995338+paschaef_a_t_users_d_o_t_noreply_d_o_tgithub_d_o_t_com>
 # GPL licensed (see end of file) * Use at your own risk!
 #
 #
 
+tmpl_trusted_proxies_list() {
+  (
+  . /usr/local/etc/library.sh
+    for param in PROXY{1,2,3}
+    do
+      proxy="$(find_app_param nc-trusted-proxies "$param")"
+      [[ -z "$proxy" ]] || echo "$proxy"
+    done
+  )
+}
+
 configure()
 {
   [[ "$PROXY1" != "" ]] && ncc config:system:set trusted_proxies 0 --value="$PROXY1"
   [[ "$PROXY2" != "" ]] && ncc config:system:set trusted_proxies 1 --value="$PROXY2"
   [[ "$PROXY3" != "" ]] && ncc config:system:set trusted_proxies 2 --value="$PROXY3"
+  install_template nextcloud.conf.sh /etc/apache2/sites-available/001-nextcloud.conf
 
   exit 0
 }

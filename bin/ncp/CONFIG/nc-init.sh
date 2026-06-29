@@ -12,8 +12,6 @@ DBADMIN=ncadmin
 
 configure()
 {
-  source /usr/local/etc/library.sh # sets PHPVER NCVER
-
   echo "Setting up a clean Nextcloud instance... wait until message 'NC init done'"
 
   # checks
@@ -25,7 +23,7 @@ configure()
   echo "Setting up database..."
 
   # launch mariadb if not already running
-  if ! pgrep -c mysqld &>/dev/null; then
+  if ! [[ -f /run/mysqld/mysqld.pid ]]; then
     echo "Starting mariaDB"
     mysqld &
     local db_pid=$!
@@ -55,10 +53,29 @@ EOF
   ## INITIALIZE NEXTCLOUD
 
   # make sure redis is running first
+  REDISPASS="$( grep "^requirepass" /etc/redis/redis.conf | cut -f2 -d' ' )"
   if ! pgrep -c redis-server &>/dev/null; then
     mkdir -p /var/run/redis
+    mkdir -p /var/log/
     chown redis /var/run/redis
-    sudo -u redis redis-server /etc/redis/redis.conf &
+    sudo -u redis redis-server /etc/redis/redis.conf > /var/log/redis.log 2>&1 &
+    redis_pid=$!
+    for i in {1..5}
+    do
+
+      if redis-cli -s //var/run/redis/redis.sock -a "$REDISPASS" ping | grep PONG
+      then
+        break
+      else
+        if [[ $i -ge 5 ]]
+        then
+          echo "FAILED TO START REDIS"
+          cat /var/log/redis.log /var/log/redis/redis-server.log
+          return 1
+        fi
+      fi
+      sleep 3
+    done
   fi
 
   while :; do
@@ -113,26 +130,27 @@ EOF
   # email
   ncc config:system:set mail_smtpmode     --value="sendmail"
   ncc config:system:set mail_smtpauthtype --value="LOGIN"
-  ncc config:system:set mail_from_address --value="admin"
-  ncc config:system:set mail_domain       --value="ownyourbits.com"
+  ncc config:system:set mail_from_address --value="noreply"
+  ncc config:system:set mail_domain       --value="nextcloudpi.com"
 
-  # NCP theme
+  # Fix NCP theme
   [[ -e /usr/local/etc/logo ]] && {
     local ID=$( grep instanceid config/config.php | awk -F "=> " '{ print $2 }' | sed "s|[,']||g" )
     [[ "$ID" == "" ]] && { echo "failed to get ID"; return 1; }
-    mkdir -p data/appdata_${ID}/theming/images
-    cp /usr/local/etc/background data/appdata_${ID}/theming/images
-    cp /usr/local/etc/logo data/appdata_${ID}/theming/images/logo
-    cp /usr/local/etc/logo data/appdata_${ID}/theming/images/logoheader
-    chown -R www-data:www-data data/appdata_${ID}
+    local theming_base_path="data/appdata_${ID}/theming/global/images"
+    mkdir -p "${theming_base_path}"
+    cp /usr/local/etc/background "${theming_base_path}/"
+    cp /usr/local/etc/logo "${theming_base_path}/logo"
+    cp /usr/local/etc/logo "${theming_base_path}/logoheader"
+    chown -R www-data:www-data "data/appdata_${ID}"
   }
 
   mysql nextcloud <<EOF
-replace into  oc_appconfig values ( 'theming', 'name'          , "NextCloudPi"             );
-replace into  oc_appconfig values ( 'theming', 'slogan'        , "keep your data close"    );
-replace into  oc_appconfig values ( 'theming', 'url'           , "https://ownyourbits.com" );
-replace into  oc_appconfig values ( 'theming', 'logoMime'      , "image/svg+xml"           );
-replace into  oc_appconfig values ( 'theming', 'backgroundMime', "image/png"               );
+replace into  ${DB_PREFIX}appconfig values ( 'theming', 'name'          , "NextCloudPi"             , 2, 0);
+replace into  ${DB_PREFIX}appconfig values ( 'theming', 'slogan'        , "keep your data close"    , 2, 0);
+replace into  ${DB_PREFIX}appconfig values ( 'theming', 'url'           , "https://nextcloudpi.com" , 2, 0);
+replace into  ${DB_PREFIX}appconfig values ( 'theming', 'logoMime'      , "image/svg+xml"           , 2, 0);
+replace into  ${DB_PREFIX}appconfig values ( 'theming', 'backgroundMime', "image/png"               , 2, 0);
 EOF
 
   # NCP app
@@ -153,35 +171,32 @@ EOF
   # we handle this ourselves
   ncc app:disable updatenotification
 
-  # News dropped support for 32-bit -> https://github.com/nextcloud/news/issues/1423
-  if ! [[ "$(uname -m)" =~ "armv7" ]]; then
-    ncc app:install news
-    ncc app:enable  news
-  fi
+  # Not supported in Nextcloudpi without manual setup
+  ncc app:disable app_api
 
   # ncp-previewgenerator
-  if is_more_recent_than "21.0.0" "$NCVER"; then
-    local ncprev=/var/www/ncp-previewgenerator/ncp-previewgenerator-nc20
-  else
+  local ncver
+  ncver="$(ncc status 2>/dev/null | grep "version:" | awk '{ print $3 }')"
+  if ! is_more_recent_than "21.0.0" "${ncver}"; then
     ncc app:install notify_push
     ncc app:enable  notify_push
     test -f /.ncp-image || start_notify_push # don't start during build
-    local ncprev=/var/www/ncp-previewgenerator/ncp-previewgenerator-nc21
   fi
-  ln -snf "${ncprev}" /var/www/nextcloud/apps/previewgenerator
-  chown -R www-data: /var/www/nextcloud/apps/previewgenerator
-  ncc app:enable previewgenerator
 
   # previews
-  ncc config:app:set previewgenerator squareSizes --value="32 256"
-  ncc config:app:set previewgenerator widthSizes  --value="256 384"
-  ncc config:app:set previewgenerator heightSizes --value="256"
+
+  ncc app:install previewgenerator
+  ncc app:enable previewgenerator
+  ncc config:app:set --value="64 256" previewgenerator squareSizes
+  ncc config:app:set --value="256 4096" previewgenerator fillWidthHeightSizes
+  ncc config:app:set --value="64 256 1024" previewgenerator widthSizes
+  ncc config:app:set --value="64 256 1024" previewgenerator heightSizes
   ncc config:system:set preview_max_x --value 2048
   ncc config:system:set preview_max_y --value 2048
   ncc config:system:set jpeg_quality --value 60
-  ncc config:app:set preview jpeg_quality --value="60"
 
   # other
+  ncc config:system:set serverid --value="$((RANDOM % 1024))" --type=integer
   ncc config:system:set overwriteprotocol --value=https
   ncc config:system:set overwrite.cli.url --value="https://nextcloudpi/"
 
@@ -194,6 +209,7 @@ EOF
   # TODO temporary workaround for https://github.com/nextcloud/server/pull/13358
   ncc -n db:convert-filecache-bigint
   ncc db:add-missing-indices
+  ncc maintenance:repair --include-expensive
 
   # Default trusted domain (only from ncp-config)
   test -f /usr/local/bin/nextcloud-domain.sh && {
@@ -202,6 +218,7 @@ EOF
 
   # dettach mysql during the build
   if [[ "${db_pid}" != "" ]]; then
+    echo "Shutting down mariaDB (${db_pid})"
     mysqladmin -u root shutdown
     wait "${db_pid}"
   fi

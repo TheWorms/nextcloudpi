@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Fail2ban for NextCloudPi
+# Fail2ban for NextcloudPi
 #
 # Copyleft 2017 by Ignacio Nunez Hernanz <nacho _a_t_ ownyourbits _d_o_t_ com>
 # GPL licensed (see end of file) * Use at your own risk!
@@ -24,6 +24,7 @@
 install()
 {
   apt-get update
+  apt-get install --no-install-recommends -y python3-systemd
   apt-get install --no-install-recommends -y fail2ban whois
   update-rc.d fail2ban disable
   rm -f /etc/fail2ban/jail.d/defaults-debian.conf
@@ -113,7 +114,7 @@ protocol   = tcp
 chain      = INPUT
 action_    = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
 action_mwl = %(banaction)s[name=%(__name__)s, port="%(port)s", protocol="%(protocol)s", chain="%(chain)s"]
-           sendmail-whois-lines[name=%(__name__)s, dest=$EMAIL, sender=ncp-fail2ban@ownyourbits.com]
+           sendmail-whois-lines[name=%(__name__)s, dest=$EMAIL, sender=ncp-fail2ban@nextcloudpi.com]
 action = %($ACTION)s
 
 #
@@ -123,6 +124,7 @@ action = %($ACTION)s
 enabled  = true
 port     = ssh
 filter   = sshd
+backend  = systemd
 logpath  = /var/log/auth.log
 maxretry = $MAXRETRY
 
@@ -135,16 +137,18 @@ port     = http,https
 filter   = nextcloud
 logpath  = $NCLOG
 maxretry = $MAXRETRY
+backend  = auto
 
 #
 # UFW
 #
 [ufwban]
 enabled = true
-port = ssh, http, https
-filter = ufwban
+port    = ssh, http, https
+filter  = ufwban
 logpath = /var/log/ufw.log
-action = ufw
+action  = ufw
+backend = auto
 EOF
 
   cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
